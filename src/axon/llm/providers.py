@@ -11,10 +11,12 @@ from axon.llm.base import (
     ChatMessage,
     Choice,
     ChoiceDelta,
+    FunctionCall,
     LLMProvider,
     Message,
     MessageRole,
     StreamResponse,
+    ToolCall,
     Usage,
 )
 
@@ -37,6 +39,7 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = 4096,
+        tools: list[dict] | None = None,
     ) -> ChatCompletionResponse:
         model = model or self._default_model
 
@@ -50,6 +53,7 @@ class LiteLLMProvider(LLMProvider):
                 messages=litellm_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
             )
 
             return self._parse_response(response)
@@ -107,6 +111,41 @@ class LiteLLMProvider(LLMProvider):
         choice = response["choices"][0]
         message = choice["message"]
 
+        litellm_tool_calls = message.get("tool_calls")
+        parsed_tool_calls = None
+        if litellm_tool_calls:
+            parsed_tool_calls = []
+            for tc in litellm_tool_calls:
+                tc_id = tc.get("id") if isinstance(tc, dict) else tc.id
+                tc_type = (
+                    tc.get("type", "function") if isinstance(tc, dict) else tc.type
+                )
+                func = tc.get("function", {}) if isinstance(tc, dict) else tc.function
+                func_name = func.get("name") if isinstance(func, dict) else func.name
+                func_args = (
+                    func.get("arguments") if isinstance(func, dict) else func.arguments
+                )
+                parsed_tool_calls.append(
+                    {
+                        "id": tc_id,
+                        "type": tc_type,
+                        "function": {"name": func_name, "arguments": func_args},
+                    }
+                )
+            tool_calls = [
+                ToolCall(
+                    id=tc["id"],
+                    type=tc["type"],
+                    function=FunctionCall(
+                        name=tc["function"]["name"],
+                        arguments=tc["function"]["arguments"],
+                    ),
+                )
+                for tc in parsed_tool_calls
+            ]
+        else:
+            tool_calls = None
+
         usage = None
         if "usage" in response and response["usage"]:
             usage = Usage(
@@ -122,7 +161,8 @@ class LiteLLMProvider(LLMProvider):
                     index=choice.get("index", 0),
                     message=Message(
                         role=MessageRole(message.get("role", "assistant")),
-                        content=message.get("content", ""),
+                        content=message.get("content"),
+                        tool_calls=tool_calls,
                     ),
                     finish_reason=choice.get("finish_reason"),
                 )

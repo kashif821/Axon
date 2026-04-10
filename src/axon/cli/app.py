@@ -56,9 +56,19 @@ def brain(
 @app.command()
 def build(
     task: str = typer.Argument(..., help="Task description for building"),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Model to use (e.g., gpt-4, claude-3, gemini/gemini-2.5-flash)",
+    ),
 ) -> None:
     """Build code based on a task description."""
-    console.print("[dim]build command not yet implemented[/dim]")
+    import asyncio
+
+    from axon.cli.commands.build import run_build
+
+    asyncio.run(run_build(task, model=model))
 
 
 @app.command()

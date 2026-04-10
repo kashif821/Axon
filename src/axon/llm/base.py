@@ -14,16 +14,28 @@ class MessageRole(str, Enum):
     TOOL = "tool"
 
 
+class ToolCall(BaseModel):
+    id: str
+    type: str = "function"
+    function: "FunctionCall"
+
+
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str
+
+
 class Message(BaseModel):
     role: MessageRole
-    content: str
+    content: str | None = None
     name: str | None = None
     tool_call_id: str | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 class ChatMessage(BaseModel):
     role: MessageRole
-    content: str = ""
+    content: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -81,6 +93,7 @@ class LLMProvider(ABC):
         model: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = 4096,
+        tools: list[dict] | None = None,
     ) -> ChatCompletionResponse:
         pass
 
