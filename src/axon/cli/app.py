@@ -64,9 +64,19 @@ def build(
 @app.command()
 def plan(
     task: str = typer.Argument(..., help="Task to plan"),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Model to use (e.g., gpt-4, claude-3, gemini/gemini-2.5-flash)",
+    ),
 ) -> None:
     """Plan steps for a complex task."""
-    console.print("[dim]plan command not yet implemented[/dim]")
+    import asyncio
+
+    from axon.cli.commands.plan import stream_plan
+
+    asyncio.run(stream_plan(task, model=model))
 
 
 def main() -> None:

@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+from typing import AsyncIterator
+
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+
+from axon.agent.planner import generate_plan
+from axon.llm.providers import LLMConfigurationError, LLMError
+
+
+console = Console()
+
+
+async def stream_plan(task: str, model: str | None = None) -> None:
+    full_response = ""
+
+    try:
+        with Live(
+            console=console,
+            refresh_per_second=15,
+            transient=False,
+        ) as live:
+            async for chunk in generate_plan(task, model=model):
+                full_response += chunk
+                live.update(
+                    Panel(
+                        Markdown(full_response),
+                        border_style="cyan",
+                        title="[bold]Axon Plan[/bold]",
+                    )
+                )
+
+    except LLMConfigurationError as e:
+        console.print(
+            Panel(
+                f"[bold red]Configuration Error[/bold red]\n\n{e}",
+                border_style="red",
+                title="Error",
+            )
+        )
+        console.print(
+            "[dim]Tip: Check your .env file and ensure you have a valid API key.[/dim]\n"
+        )
+
+    except LLMError as e:
+        console.print(
+            Panel(
+                f"[bold red]LLM Error[/bold red]\n\n{e}",
+                border_style="red",
+                title="Error",
+            )
+        )
