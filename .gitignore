@@ -1,0 +1,16 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Axon Environment & Memory
+.env
+.axon/
+*.sqlite
+*.db
+
+# OS
+.DS_Store
