@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import traceback
+import urllib.request
 from pathlib import Path
 
 from rich.console import Console
@@ -109,6 +111,24 @@ PATCH_FILE_TOOL = {
     },
 }
 
+FETCH_URL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": "Fetch the text content of a URL. Use this to read documentation or API references before writing code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
 BUILDER_SYSTEM_PROMPT = """You are a Senior Software Developer building production-ready code. Your task is to implement software based on user requests.
 
 When given a task, you MUST use the write_file tool to create or modify files. Do NOT output raw code directly.
@@ -152,7 +172,13 @@ async def build_task(
         ),
     ]
 
-    tools = [WRITE_FILE_TOOL, READ_FILE_TOOL, LIST_DIRECTORY_TOOL, PATCH_FILE_TOOL]
+    tools = [
+        WRITE_FILE_TOOL,
+        READ_FILE_TOOL,
+        LIST_DIRECTORY_TOOL,
+        PATCH_FILE_TOOL,
+        FETCH_URL_TOOL,
+    ]
     written_files: list[str] = []
 
     while True:
@@ -233,6 +259,43 @@ async def build_task(
                         tool_result = f"Directory not found: {path}"
                     except Exception as e:
                         tool_result = f"Error listing directory: {e}"
+
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=tool_result,
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+
+                elif tc_name == "fetch_url":
+                    url = args.get("url")
+
+                    if not url:
+                        tool_result = "Error: url parameter is required"
+                    else:
+                        try:
+                            request = urllib.request.Request(
+                                url, headers={"User-Agent": "Mozilla/5.0"}
+                            )
+                            with urllib.request.urlopen(
+                                request, timeout=10
+                            ) as response:
+                                html = response.read().decode("utf-8", errors="ignore")
+
+                            text = re.sub(r"<[^>]+>", " ", html)
+                            text = re.sub(r"\s+", " ", text).strip()
+                            text = text[:8000]
+
+                            if not text:
+                                tool_result = "Error: Fetched content is empty"
+                            else:
+                                tool_result = text
+                        except urllib.error.URLError as e:
+                            tool_result = f"Error fetching URL: {e}"
+                        except Exception as e:
+                            tool_result = f"Error fetching URL: {e}"
 
                     messages.append(
                         ChatMessage(
