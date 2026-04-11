@@ -161,7 +161,16 @@ async def build_task(
         tree = "[Unable to read directory structure]"
 
     system_prompt = (
-        BUILDER_SYSTEM_PROMPT + "\n\nCurrent Working Directory Structure:\n" + tree
+        BUILDER_SYSTEM_PROMPT
+        + "\n\nCurrent Working Directory Structure:\n"
+        + tree
+        + """
+
+SELF-CORRECTION PROTOCOL:
+If you run a shell command and it results in an error or a traceback, DO NOT immediately stop and ask the user for help.
+You must autonomously read the error, use the `patch_file` tool to fix the bug in the code, and then use `run_shell_command` to test it again.
+Only report back to the user once the command runs successfully, or if you have tried multiple times and are completely stuck.
+"""
     )
 
     messages = [
@@ -180,15 +189,22 @@ async def build_task(
         FETCH_URL_TOOL,
     ]
     written_files: list[str] = []
+    iteration_count = 0
 
     while True:
+        iteration_count += 1
+
+        if iteration_count > 15:
+            console.print(
+                "[bold red]Axon hit the maximum iteration limit (15).[/bold red]"
+            )
+            return written_files
+
         with console.status("[bold cyan]Axon is thinking...[/bold cyan]"):
             try:
                 response = await provider.chat(messages, model=model, tools=tools)
             except Exception as e:
-                console.print(
-                    "[bold red]API Error:[/bold red] The AI provider is currently overloaded or rate-limited. Please wait a moment and try again."
-                )
+                console.print(f"[bold red]API Error Details:[/bold red] {str(e)}")
                 return written_files
 
         choice = response.choices[0]

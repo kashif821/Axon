@@ -70,7 +70,7 @@ def build(
         None,
         "--model",
         "-m",
-        help="Model to use (e.g., gpt-4, claude-3, gemini/gemini-2.5-flash)",
+        help="Model to use (e.g., gpt-4, nvidia_nim/moonshotai/kimi-k2-thinking)",
     ),
 ) -> None:
     """Build code based on a task description."""
@@ -88,7 +88,7 @@ def plan(
         None,
         "--model",
         "-m",
-        help="Model to use (e.g., gpt-4, claude-3, gemini/gemini-2.5-flash)",
+        help="Model to use (e.g., gpt-4, nvidia_nim/moonshotai/kimi-k2-thinking)",
     ),
     execute: bool = typer.Option(
         False,

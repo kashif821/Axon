@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, AsyncIterator
 
 import litellm
@@ -80,6 +81,8 @@ class LiteLLMProvider(LLMProvider):
                 max_tokens=max_tokens,
                 tools=tools,
                 fallbacks=self._fallback_models,
+                api_base="https://integrate.api.nvidia.com/v1",
+                api_key=os.getenv("NVIDIA_API_KEY"),
             )
 
             return self._parse_response(response)
@@ -105,9 +108,22 @@ class LiteLLMProvider(LLMProvider):
     ) -> AsyncIterator[StreamResponse]:
         model = model or self._default_model
 
-        litellm_messages = [
-            {"role": msg.role.value, "content": msg.content} for msg in messages
-        ]
+        litellm_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                litellm_messages.append(msg)
+            else:
+                msg_dict = {
+                    "role": msg.role.value if hasattr(msg.role, "value") else msg.role,
+                    "content": msg.content,
+                }
+                if getattr(msg, "tool_calls", None):
+                    msg_dict["tool_calls"] = msg.tool_calls
+                if getattr(msg, "tool_call_id", None):
+                    msg_dict["tool_call_id"] = msg.tool_call_id
+                if getattr(msg, "name", None):
+                    msg_dict["name"] = msg.name
+                litellm_messages.append(msg_dict)
 
         try:
             response = await litellm.acompletion(
@@ -117,6 +133,8 @@ class LiteLLMProvider(LLMProvider):
                 max_tokens=max_tokens,
                 stream=True,
                 fallbacks=self._fallback_models,
+                api_base="https://integrate.api.nvidia.com/v1",
+                api_key=os.getenv("NVIDIA_API_KEY"),
             )
 
             async for chunk in response:
@@ -207,6 +225,8 @@ class LiteLLMProvider(LLMProvider):
         raw_content = delta.get("content")
         safe_content = raw_content if raw_content is not None else ""
 
+        reasoning_content = delta.get("reasoning_content")
+
         return StreamResponse(
             model=chunk.get("model", self._default_model),
             choices=[
@@ -219,6 +239,7 @@ class LiteLLMProvider(LLMProvider):
                     finish_reason=finish_reason,
                 )
             ],
+            reasoning_content=reasoning_content,
         )
 
 
@@ -242,7 +263,9 @@ def get_llm_provider() -> LLMProvider:
 
 
 def _get_default_model() -> str:
-    if settings.gemini_api_key and settings.gemini_api_key != "your_gemini_key_here":
+    if settings.nvidia_api_key and settings.nvidia_api_key != "your_nvidia_key_here":
+        return "openai/moonshotai/kimi-k2-thinking"
+    elif settings.gemini_api_key and settings.gemini_api_key != "your_gemini_key_here":
         return "gemini/gemini-2.5-flash"
     elif settings.openai_api_key and settings.openai_api_key != "your_openai_key_here":
         return "gpt-4o-mini"
@@ -253,4 +276,4 @@ def _get_default_model() -> str:
         return "claude-3-haiku-20240307"
     elif settings.groq_api_key and settings.groq_api_key != "your_groq_key_here":
         return "groq/llama-3.1-8b-instant"
-    return "gpt-4o-mini"
+    return "openai/moonshotai/kimi-k2-thinking"

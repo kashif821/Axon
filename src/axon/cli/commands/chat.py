@@ -41,6 +41,10 @@ async def stream_response(
             if delta:
                 full_response += delta
                 yield delta
+
+            reasoning = chunk.reasoning_content
+            if reasoning:
+                console.print(f"[dim]{reasoning}[/dim]", end="", flush=True)
     except LLMError as e:
         raise
 
@@ -154,10 +158,8 @@ async def run_chat_loop(
                 )
                 messages.pop()
 
-            except Exception:
-                console.print(
-                    "[bold red]API Error:[/bold red] The AI provider is currently overloaded or rate-limited. Please wait a moment and try again."
-                )
+            except Exception as e:
+                console.print(f"[bold red]API Error Details:[/bold red] {str(e)}")
                 messages.pop()
                 console.print()
 

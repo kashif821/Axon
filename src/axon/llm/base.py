@@ -31,6 +31,7 @@ class Message(BaseModel):
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list[ToolCall] | None = None
+    reasoning_content: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -75,6 +76,7 @@ class Usage(BaseModel):
 class StreamResponse(BaseModel):
     model: str
     choices: list[ChoiceDelta]
+    reasoning_content: str | None = None
 
 
 class LLMProvider(ABC):
