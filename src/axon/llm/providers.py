@@ -24,6 +24,11 @@ from axon.llm.base import (
 class LiteLLMProvider(LLMProvider):
     def __init__(self, default_model: str = "gpt-4o-mini"):
         self._default_model = default_model
+        self._fallback_models = [
+            {"model": "groq/llama-3.1-8b-instant"},
+            {"model": "openai/gpt-4o-mini"},
+            {"model": "anthropic/claude-3-haiku-20240307"},
+        ]
 
     @property
     def provider_name(self) -> str:
@@ -54,6 +59,7 @@ class LiteLLMProvider(LLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
+                fallbacks=self._fallback_models,
             )
 
             return self._parse_response(response)
@@ -90,6 +96,7 @@ class LiteLLMProvider(LLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                fallbacks=self._fallback_models,
             )
 
             async for chunk in response:
