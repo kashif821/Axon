@@ -11,6 +11,8 @@ from sqlmodel import select, SQLModel
 from axon.config.settings import settings
 from axon.memory.schema import ActionLog, FileChange, Session
 
+db_path = Path(settings.axon_db_path)
+db_path.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_async_engine(
     f"sqlite+aiosqlite:///{settings.axon_db_path}",

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 
 from axon.llm.base import ChatMessage, MessageRole
 from axon.llm.providers import get_llm_provider
+from axon.agent.utils import get_directory_tree
 
 console = Console()
 
@@ -29,6 +32,42 @@ WRITE_FILE_TOOL = {
                 },
             },
             "required": ["filepath", "content"],
+        },
+    },
+}
+
+READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "Read the contents of a file from the filesystem.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filepath": {
+                    "type": "string",
+                    "description": "The path to the file to read (relative or absolute)",
+                },
+            },
+            "required": ["filepath"],
+        },
+    },
+}
+
+LIST_DIRECTORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_directory",
+        "description": "List the contents of a directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The path to the directory to list (default: current directory)",
+                    "default": ".",
+                },
+            },
         },
     },
 }
@@ -58,45 +97,149 @@ async def build_task(
     confirm_write: bool = True,
 ) -> list[str]:
     provider = get_llm_provider()
+
+    try:
+        tree = get_directory_tree(max_depth=2)
+    except Exception:
+        tree = "[Unable to read directory structure]"
+
+    system_prompt = (
+        BUILDER_SYSTEM_PROMPT + "\n\nCurrent Working Directory Structure:\n" + tree
+    )
+
     messages = [
-        ChatMessage(role=MessageRole.SYSTEM, content=BUILDER_SYSTEM_PROMPT),
+        ChatMessage(role=MessageRole.SYSTEM, content=system_prompt),
         ChatMessage(
             role=MessageRole.USER,
             content=f"Please build the following:\n\n{task}",
         ),
     ]
 
-    tools = [WRITE_FILE_TOOL]
+    tools = [WRITE_FILE_TOOL, READ_FILE_TOOL, LIST_DIRECTORY_TOOL]
     written_files: list[str] = []
 
     while True:
         with console.status("[bold cyan]Axon is thinking...[/bold cyan]"):
-            response = await provider.chat(messages, model=model, tools=tools)
+            try:
+                response = await provider.chat(messages, model=model, tools=tools)
+            except Exception as e:
+                console.print(
+                    "[bold red]API Error:[/bold red] The AI provider is currently overloaded or rate-limited. Please wait a moment and try again."
+                )
+                return written_files
 
         choice = response.choices[0]
-        assistant_message = choice.message
+        tool_calls = getattr(choice.message, "tool_calls", []) or []
+        content = getattr(choice.message, "content", None)
 
-        if assistant_message.tool_calls:
-            for tool_call in assistant_message.tool_calls:
-                func = tool_call.function
+        if content and content.strip():
+            console.print(
+                Panel(
+                    Markdown(content),
+                    title="[bold]Axon[/bold]",
+                    border_style="blue",
+                )
+            )
 
-                if func.name == "write_file":
-                    args = json.loads(func.arguments)
-                    filepath = args["filepath"]
-                    content = args["content"]
+        if tool_calls:
+            assistant_msg_dict = {
+                "role": "assistant",
+                "content": content or "",
+                "tool_calls": tool_calls,
+            }
+            messages.append(assistant_msg_dict)
 
-                    if confirm_write:
+            last_tool_name = None
+            for tc in tool_calls:
+                tc_id = tc.get("id") if isinstance(tc, dict) else tc.id
+                func = tc.get("function") if isinstance(tc, dict) else tc.function
+                tc_name = func.get("name") if isinstance(func, dict) else func.name
+                last_tool_name = tc_name
+
+                func_arguments = (
+                    func.get("arguments") if isinstance(func, dict) else func.arguments
+                )
+                args_str = func_arguments if func_arguments else "{}"
+                try:
+                    args = json.loads(args_str) or {}
+                except Exception:
+                    args = {}
+
+                if tc_name == "read_file":
+                    filepath = args.get("filepath")
+                    if not filepath:
+                        tool_result = "Error: filepath parameter is required"
+                    else:
+                        try:
+                            file_content = Path(filepath).read_text()
+                            tool_result = file_content
+                        except FileNotFoundError:
+                            tool_result = f"File not found: {filepath}"
+                        except Exception as e:
+                            tool_result = f"Error reading file: {e}"
+
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=tool_result,
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+
+                elif tc_name == "list_directory":
+                    path = args.get("path", ".")
+                    try:
+                        contents = os.listdir(path)
+                        tool_result = ", ".join(sorted(contents))
+                    except FileNotFoundError:
+                        tool_result = f"Directory not found: {path}"
+                    except Exception as e:
+                        tool_result = f"Error listing directory: {e}"
+
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=tool_result,
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+
+                elif tc_name == "write_file":
+                    filepath = args.get("filepath")
+                    file_content = args.get("content")
+
+                    if not filepath:
+                        console.print(
+                            f"[bold red]Error writing file:[/bold red] filepath parameter is required"
+                        )
+                    elif file_content is None:
+                        console.print(
+                            f"[bold red]Error writing file:[/bold red] content parameter is required"
+                        )
+                    elif confirm_write:
                         from axon.cli.commands.build import ask_confirmation
 
                         allowed = ask_confirmation(filepath)
+                        if allowed:
+                            try:
+                                path = Path(filepath)
+                                path.parent.mkdir(parents=True, exist_ok=True)
+                                path.write_text(file_content)
+                                written_files.append(filepath)
+                                console.print(
+                                    f"[bold green]File written successfully:[/bold green] {filepath}"
+                                )
+                            except Exception as e:
+                                console.print(
+                                    f"[bold red]Error writing file:[/bold red] {e}"
+                                )
                     else:
-                        allowed = True
-
-                    if allowed:
                         try:
                             path = Path(filepath)
                             path.parent.mkdir(parents=True, exist_ok=True)
-                            path.write_text(content)
+                            path.write_text(file_content)
                             written_files.append(filepath)
                             console.print(
                                 f"[bold green]File written successfully:[/bold green] {filepath}"
@@ -105,26 +248,12 @@ async def build_task(
                             console.print(
                                 f"[bold red]Error writing file:[/bold red] {e}"
                             )
-                    else:
-                        console.print(
-                            f"[bold yellow]User denied permission to write:[/bold yellow] {filepath}"
-                        )
-            break
-        else:
-            messages.append(
-                ChatMessage(
-                    role=MessageRole.ASSISTANT,
-                    content=assistant_message.content,
-                )
-            )
-            if assistant_message.content:
-                console.print(
-                    Panel(
-                        assistant_message.content,
-                        border_style="yellow",
-                        title="[bold]Axon Response[/bold]",
-                    )
-                )
+                    break
+
+            if last_tool_name != "write_file":
+                continue
+
+        if not tool_calls:
             break
 
     return written_files

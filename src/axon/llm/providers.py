@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator
 
 import litellm
 from litellm import AuthenticationError, RateLimitError, BadRequestError
+
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
+
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
 from axon.config.settings import settings
 from axon.llm.base import (
@@ -48,9 +55,22 @@ class LiteLLMProvider(LLMProvider):
     ) -> ChatCompletionResponse:
         model = model or self._default_model
 
-        litellm_messages = [
-            {"role": msg.role.value, "content": msg.content} for msg in messages
-        ]
+        litellm_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                litellm_messages.append(msg)
+            else:
+                msg_dict = {
+                    "role": msg.role.value if hasattr(msg.role, "value") else msg.role,
+                    "content": msg.content,
+                }
+                if getattr(msg, "tool_calls", None):
+                    msg_dict["tool_calls"] = msg.tool_calls
+                if getattr(msg, "tool_call_id", None):
+                    msg_dict["tool_call_id"] = msg.tool_call_id
+                if getattr(msg, "name", None):
+                    msg_dict["name"] = msg.name
+                litellm_messages.append(msg_dict)
 
         try:
             response = await litellm.acompletion(

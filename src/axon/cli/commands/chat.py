@@ -154,6 +154,13 @@ async def run_chat_loop(
                 )
                 messages.pop()
 
+            except Exception:
+                console.print(
+                    "[bold red]API Error:[/bold red] The AI provider is currently overloaded or rate-limited. Please wait a moment and try again."
+                )
+                messages.pop()
+                console.print()
+
         except KeyboardInterrupt:
             console.print("\n[dim]Use /exit or /quit to exit.[/dim]\n")
             continue

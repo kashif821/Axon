@@ -36,6 +36,8 @@ class Message(BaseModel):
 class ChatMessage(BaseModel):
     role: MessageRole
     content: str | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
