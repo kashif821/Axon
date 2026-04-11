@@ -90,13 +90,19 @@ def plan(
         "-m",
         help="Model to use (e.g., gpt-4, claude-3, gemini/gemini-2.5-flash)",
     ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        "-e",
+        help="Execute the plan using the Builder Agent after generating it",
+    ),
 ) -> None:
     """Plan steps for a complex task."""
     import asyncio
 
     from axon.cli.commands.plan import stream_plan
 
-    asyncio.run(stream_plan(task, model=model))
+    asyncio.run(stream_plan(task, model=model, execute=execute))
 
 
 def main() -> None:

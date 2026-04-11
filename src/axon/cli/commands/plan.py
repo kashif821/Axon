@@ -14,7 +14,9 @@ from axon.llm.providers import LLMConfigurationError, LLMError
 console = Console()
 
 
-async def stream_plan(task: str, model: str | None = None) -> None:
+async def stream_plan(
+    task: str, model: str | None = None, execute: bool = False
+) -> None:
     full_response = ""
 
     try:
@@ -52,4 +54,15 @@ async def stream_plan(task: str, model: str | None = None) -> None:
                 border_style="red",
                 title="Error",
             )
+        )
+
+    if execute and full_response:
+        from axon.cli.commands.build import run_build
+
+        console.print(
+            "\n[bold purple]⚙️ Handing blueprint over to the Builder Agent...[/bold purple]\n"
+        )
+        await run_build(
+            task=f"Please execute the following architectural plan:\n\n{full_response}",
+            model=model,
         )
