@@ -72,6 +72,32 @@ LIST_DIRECTORY_TOOL = {
     },
 }
 
+PATCH_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "patch_file",
+        "description": "Surgically replace a specific block of text in an existing file. Use this instead of write_file for small changes to large files.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filepath": {
+                    "type": "string",
+                    "description": "The path to the file to patch (relative or absolute)",
+                },
+                "search": {
+                    "type": "string",
+                    "description": "The exact string to search for. Must match the file exactly, including whitespace and indentation.",
+                },
+                "replace": {
+                    "type": "string",
+                    "description": "The new string to replace the search string with.",
+                },
+            },
+            "required": ["filepath", "search", "replace"],
+        },
+    },
+}
+
 BUILDER_SYSTEM_PROMPT = """You are a Senior Software Developer building production-ready code. Your task is to implement software based on user requests.
 
 When given a task, you MUST use the write_file tool to create or modify files. Do NOT output raw code directly.
@@ -115,7 +141,7 @@ async def build_task(
         ),
     ]
 
-    tools = [WRITE_FILE_TOOL, READ_FILE_TOOL, LIST_DIRECTORY_TOOL]
+    tools = [WRITE_FILE_TOOL, READ_FILE_TOOL, LIST_DIRECTORY_TOOL, PATCH_FILE_TOOL]
     written_files: list[str] = []
 
     while True:
@@ -250,7 +276,79 @@ async def build_task(
                             )
                     break
 
-            if last_tool_name != "write_file":
+                elif tc_name == "patch_file":
+                    filepath = args.get("filepath")
+                    search = args.get("search")
+                    replace = args.get("replace")
+
+                    if not filepath:
+                        console.print(
+                            f"[bold red]Error patching file:[/bold red] filepath parameter is required"
+                        )
+                        tool_result = "Error: filepath parameter is required"
+                    elif not search:
+                        console.print(
+                            f"[bold red]Error patching file:[/bold red] search parameter is required"
+                        )
+                        tool_result = "Error: search parameter is required"
+                    elif replace is None:
+                        console.print(
+                            f"[bold red]Error patching file:[/bold red] replace parameter is required"
+                        )
+                        tool_result = "Error: replace parameter is required"
+                    else:
+                        try:
+                            current_content = Path(filepath).read_text()
+
+                            if search not in current_content:
+                                tool_result = "Error: Search string not found in file. Ensure exact whitespace and indentation match."
+                                console.print(
+                                    f"[bold yellow]Search string not found in:[/bold yellow] {filepath}"
+                                )
+                            else:
+                                console.print(
+                                    f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
+                                )
+                                allow = (
+                                    input("Allow this patch? [y/N]: ").strip().lower()
+                                )
+
+                                if allow == "y":
+                                    new_content = current_content.replace(
+                                        search, replace
+                                    )
+                                    Path(filepath).write_text(new_content)
+                                    tool_result = "File patched successfully."
+                                    console.print(
+                                        f"[bold green]File patched successfully:[/bold green] {filepath}"
+                                    )
+                                else:
+                                    tool_result = "User denied permission to patch."
+                                    console.print("[dim]Patch denied by user.[/dim]")
+                        except FileNotFoundError:
+                            tool_result = f"Error: File not found: {filepath}"
+                            console.print(
+                                f"[bold red]Error patching file:[/bold red] {filepath} not found"
+                            )
+                        except Exception as e:
+                            tool_result = f"Error patching file: {e}"
+                            console.print(
+                                f"[bold red]Error patching file:[/bold red] {e}"
+                            )
+
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=tool_result,
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+
+                    if tool_result == "File patched successfully.":
+                        break
+
+            if last_tool_name not in ("write_file", "patch_file"):
                 continue
 
         if not tool_calls:
