@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
+import traceback
 from pathlib import Path
 
 from rich.console import Console
@@ -13,6 +15,15 @@ from axon.llm.providers import get_llm_provider
 from axon.agent.utils import get_directory_tree
 
 console = Console()
+
+
+def validate_python_code(code: str) -> str | None:
+    try:
+        ast.parse(code)
+        return None
+    except SyntaxError:
+        return traceback.format_exc()
+
 
 WRITE_FILE_TOOL = {
     "type": "function",
@@ -240,10 +251,57 @@ async def build_task(
                         console.print(
                             f"[bold red]Error writing file:[/bold red] filepath parameter is required"
                         )
+                        tool_result = "Error: filepath parameter is required"
                     elif file_content is None:
                         console.print(
                             f"[bold red]Error writing file:[/bold red] content parameter is required"
                         )
+                        tool_result = "Error: content parameter is required"
+                    elif filepath.endswith(".py"):
+                        syntax_error = validate_python_code(file_content)
+                        if syntax_error:
+                            tool_result = f"SyntaxError detected before writing:\n{syntax_error}Please fix the syntax and try again."
+                            console.print(
+                                f"[bold red]Syntax Error detected:[/bold red] {filepath}"
+                            )
+                        elif confirm_write:
+                            from axon.cli.commands.build import ask_confirmation
+
+                            allowed = ask_confirmation(filepath)
+                            if allowed:
+                                try:
+                                    path = Path(filepath)
+                                    path.parent.mkdir(parents=True, exist_ok=True)
+                                    path.write_text(file_content)
+                                    written_files.append(filepath)
+                                    console.print(
+                                        f"[bold green]File written successfully:[/bold green] {filepath}"
+                                    )
+                                    tool_result = (
+                                        f"File written successfully: {filepath}"
+                                    )
+                                except Exception as e:
+                                    tool_result = f"Error writing file: {e}"
+                                    console.print(
+                                        f"[bold red]Error writing file:[/bold red] {e}"
+                                    )
+                            else:
+                                tool_result = "User denied permission to write file."
+                        else:
+                            try:
+                                path = Path(filepath)
+                                path.parent.mkdir(parents=True, exist_ok=True)
+                                path.write_text(file_content)
+                                written_files.append(filepath)
+                                console.print(
+                                    f"[bold green]File written successfully:[/bold green] {filepath}"
+                                )
+                                tool_result = f"File written successfully: {filepath}"
+                            except Exception as e:
+                                tool_result = f"Error writing file: {e}"
+                                console.print(
+                                    f"[bold red]Error writing file:[/bold red] {e}"
+                                )
                     elif confirm_write:
                         from axon.cli.commands.build import ask_confirmation
 
@@ -257,10 +315,14 @@ async def build_task(
                                 console.print(
                                     f"[bold green]File written successfully:[/bold green] {filepath}"
                                 )
+                                tool_result = f"File written successfully: {filepath}"
                             except Exception as e:
+                                tool_result = f"Error writing file: {e}"
                                 console.print(
                                     f"[bold red]Error writing file:[/bold red] {e}"
                                 )
+                        else:
+                            tool_result = "User denied permission to write file."
                     else:
                         try:
                             path = Path(filepath)
@@ -270,7 +332,9 @@ async def build_task(
                             console.print(
                                 f"[bold green]File written successfully:[/bold green] {filepath}"
                             )
+                            tool_result = f"File written successfully: {filepath}"
                         except Exception as e:
+                            tool_result = f"Error writing file: {e}"
                             console.print(
                                 f"[bold red]Error writing file:[/bold red] {e}"
                             )
@@ -306,25 +370,59 @@ async def build_task(
                                     f"[bold yellow]Search string not found in:[/bold yellow] {filepath}"
                                 )
                             else:
-                                console.print(
-                                    f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
-                                )
-                                allow = (
-                                    input("Allow this patch? [y/N]: ").strip().lower()
-                                )
+                                new_content = current_content.replace(search, replace)
 
-                                if allow == "y":
-                                    new_content = current_content.replace(
-                                        search, replace
-                                    )
-                                    Path(filepath).write_text(new_content)
-                                    tool_result = "File patched successfully."
-                                    console.print(
-                                        f"[bold green]File patched successfully:[/bold green] {filepath}"
-                                    )
+                                if filepath.endswith(".py"):
+                                    syntax_error = validate_python_code(new_content)
+                                    if syntax_error:
+                                        tool_result = f"SyntaxError detected before patching:\n{syntax_error}Please fix the syntax and try again."
+                                        console.print(
+                                            f"[bold red]Syntax Error detected:[/bold red] {filepath}"
+                                        )
+                                    else:
+                                        console.print(
+                                            f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
+                                        )
+                                        allow = (
+                                            input("Allow this patch? [y/N]: ")
+                                            .strip()
+                                            .lower()
+                                        )
+
+                                        if allow == "y":
+                                            Path(filepath).write_text(new_content)
+                                            tool_result = "File patched successfully."
+                                            console.print(
+                                                f"[bold green]File patched successfully:[/bold green] {filepath}"
+                                            )
+                                        else:
+                                            tool_result = (
+                                                "User denied permission to patch."
+                                            )
+                                            console.print(
+                                                "[dim]Patch denied by user.[/dim]"
+                                            )
                                 else:
-                                    tool_result = "User denied permission to patch."
-                                    console.print("[dim]Patch denied by user.[/dim]")
+                                    console.print(
+                                        f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
+                                    )
+                                    allow = (
+                                        input("Allow this patch? [y/N]: ")
+                                        .strip()
+                                        .lower()
+                                    )
+
+                                    if allow == "y":
+                                        Path(filepath).write_text(new_content)
+                                        tool_result = "File patched successfully."
+                                        console.print(
+                                            f"[bold green]File patched successfully:[/bold green] {filepath}"
+                                        )
+                                    else:
+                                        tool_result = "User denied permission to patch."
+                                        console.print(
+                                            "[dim]Patch denied by user.[/dim]"
+                                        )
                         except FileNotFoundError:
                             tool_result = f"Error: File not found: {filepath}"
                             console.print(
