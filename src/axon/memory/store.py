@@ -57,7 +57,18 @@ async def log_action(
 
 async def get_session_history(session_id: uuid.UUID) -> list[ActionLog]:
     async with async_session_factory() as session_obj:
-        statement = select(ActionLog).where(ActionLog.session_id == session_id)
+        statement = (
+            select(ActionLog)
+            .where(ActionLog.session_id == session_id)
+            .order_by(ActionLog.timestamp)
+        )
+        result = await session_obj.execute(statement)
+        return list(result.scalars().all())
+
+
+async def get_all_sessions() -> list[Session]:
+    async with async_session_factory() as session_obj:
+        statement = select(Session).order_by(Session.updated_at.desc())
         result = await session_obj.execute(statement)
         return list(result.scalars().all())
 

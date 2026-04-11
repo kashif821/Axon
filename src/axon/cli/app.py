@@ -24,11 +24,17 @@ def chat(
         "-m",
         help="Model to use (e.g., gpt-4, claude-3, groq/llama-3)",
     ),
+    session: Optional[str] = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Resume a previous session by its UUID",
+    ),
 ) -> None:
     """Start an interactive chat session with Axon."""
     import asyncio
 
-    asyncio.run(run_chat_loop(model=model))
+    asyncio.run(run_chat_loop(model=model, session_id=session))
 
 
 @app.command()
@@ -47,10 +53,14 @@ def ask(
 
 @app.command()
 def brain(
-    subcommand: str = typer.Argument(None, help="Subcommand: status, reset, sync"),
+    subcommand: str = typer.Argument("status", help="Subcommand: status"),
 ) -> None:
     """Manage Axon's memory brain."""
-    console.print("[dim]brain command not yet implemented[/dim]")
+    import asyncio
+
+    from axon.cli.commands.brain import manage_brain
+
+    asyncio.run(manage_brain(subcommand=subcommand))
 
 
 @app.command()

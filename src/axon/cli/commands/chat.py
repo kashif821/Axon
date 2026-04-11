@@ -16,6 +16,12 @@ from rich.text import Text
 
 from axon.llm.base import ChatMessage, MessageRole
 from axon.llm.providers import LLMConfigurationError, LLMError, get_llm_provider
+from axon.memory.store import (
+    create_session,
+    get_session,
+    get_session_history,
+    log_action,
+)
 
 
 console = Console()
@@ -39,11 +45,35 @@ async def stream_response(
         raise
 
 
-async def run_chat_loop(model: str | None = None) -> None:
+async def run_chat_loop(
+    model: str | None = None, session_id: str | None = None
+) -> None:
     messages: list[ChatMessage] = []
+    current_session = None
     session = PromptSession(history=_history)
 
-    _print_welcome()
+    if session_id:
+        import uuid
+
+        try:
+            session_uuid = uuid.UUID(session_id)
+            db_session = await get_session(session_uuid)
+            if db_session:
+                current_session = db_session
+                history = await get_session_history(session_uuid)
+                for log in history:
+                    role = MessageRole(log.role)
+                    messages.append(ChatMessage(role=role, content=log.content))
+                console.print(f"[bold green]Resumed session:[/bold green] {session_id}")
+            else:
+                console.print(
+                    f"[bold yellow]Session not found:[/bold yellow] {session_id}"
+                )
+        except ValueError:
+            console.print(f"[bold red]Invalid session ID:[/bold red] {session_id}")
+    else:
+        _print_welcome()
+        current_session = await create_session(title="New Chat")
 
     while True:
         try:
@@ -71,6 +101,8 @@ async def run_chat_loop(model: str | None = None) -> None:
                 continue
 
             messages.append(ChatMessage(role=MessageRole.USER, content=user_input))
+            if current_session:
+                await log_action(current_session.id, "user", user_input)
 
             console.print()
 
@@ -94,6 +126,8 @@ async def run_chat_loop(model: str | None = None) -> None:
                 messages.append(
                     ChatMessage(role=MessageRole.ASSISTANT, content=full_response)
                 )
+                if current_session:
+                    await log_action(current_session.id, "assistant", full_response)
 
                 console.print()
 

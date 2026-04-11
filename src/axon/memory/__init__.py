@@ -1,6 +1,7 @@
 from axon.memory.schema import ActionLog, FileChange, Session
 from axon.memory.store import (
     create_session,
+    get_all_sessions,
     get_session,
     get_session_history,
     init_db,
@@ -17,5 +18,6 @@ __all__ = [
     "log_action",
     "get_session_history",
     "get_session",
+    "get_all_sessions",
     "log_file_change",
 ]
