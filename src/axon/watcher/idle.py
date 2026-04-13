@@ -2,13 +2,13 @@ import asyncio
 import logging
 import threading
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 _last_activity_time: Optional[datetime] = None
 _idle_loop: Optional[asyncio.AbstractEventLoop] = None
-_callback: Optional[Callable[[list], None]] = None
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
 _running = False
 _IDLE_THRESHOLD_SECONDS = 5  # change to 180 for production
 
@@ -19,14 +19,18 @@ def reset_activity() -> None:
     logger.debug("Activity timer reset")
 
 
-def start_idle_monitor(callback: Callable[[list], None]) -> None:
-    global _callback, _running, _last_activity_time, _idle_loop
+def start_idle_monitor(
+    callback: Callable[[list], Any],
+    main_loop: Optional[asyncio.AbstractEventLoop] = None,
+) -> None:
+    global _callback, _running, _last_activity_time, _idle_loop, _main_loop
 
     if _running:
         logger.warning("Idle monitor already running")
         return
 
     _callback = callback
+    _main_loop = main_loop
     _running = True
     _last_activity_time = datetime.now()
 
@@ -37,19 +41,24 @@ def start_idle_monitor(callback: Callable[[list], None]) -> None:
 
         async def check_loop():
             while _running:
-                await asyncio.sleep(2)  # check every 2 seconds
+                await asyncio.sleep(2)
                 if _last_activity_time is None:
                     continue
                 idle_seconds = (datetime.now() - _last_activity_time).total_seconds()
                 if idle_seconds >= _IDLE_THRESHOLD_SECONDS:
                     logger.info(f"Idle for {idle_seconds:.0f}s, triggering callback")
                     try:
-                        from src.axon.watcher.monitor import get_recent_changes
+                        from axon.watcher.monitor import get_recent_changes
 
                         changes = get_recent_changes()
                         if _callback:
-                            _callback(changes)
-                        # Reset after firing so it doesn't spam
+                            if _main_loop is not None:
+                                future = asyncio.run_coroutine_threadsafe(
+                                    _callback(changes), _main_loop
+                                )
+                                future.result(timeout=30)
+                            else:
+                                _callback(changes)
                         reset_activity()
                     except Exception as e:
                         logger.error(f"Error in idle callback: {e}")
