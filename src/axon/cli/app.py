@@ -3,17 +3,15 @@ from __future__ import annotations
 from typing import Optional
 
 import typer
-from rich.console import Console
 
 from axon.cli.commands.chat import run_chat_loop
+from axon.utils.console import console
 
 app = typer.Typer(
     name="axon",
     help="An open-source, model-agnostic CLI coding agent.",
     add_completion=False,
 )
-
-console = Console()
 
 
 @app.command()
@@ -39,7 +37,9 @@ def chat(
 
 @app.command()
 def ask(
-    prompt: str = typer.Argument(..., help="The question or task to ask Axon"),
+    question: str = typer.Argument(
+        ..., help="The question to ask Axon about your recent activity"
+    ),
     model: Optional[str] = typer.Option(
         None,
         "--model",
@@ -47,8 +47,12 @@ def ask(
         help="Model to use",
     ),
 ) -> None:
-    """Ask Axon a single question without interactive mode."""
-    console.print("[dim]ask command not yet implemented[/dim]")
+    """Ask Axon about your recent activity."""
+    import asyncio
+
+    from axon.cli.commands.ask import run_ask
+
+    asyncio.run(run_ask(question=question, model=model))
 
 
 @app.command()

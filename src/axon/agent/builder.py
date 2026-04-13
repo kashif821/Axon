@@ -7,16 +7,15 @@ import re
 import traceback
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
-from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
 from axon.llm.base import ChatMessage, MessageRole
 from axon.llm.providers import get_llm_provider
 from axon.agent.utils import get_directory_tree
-
-console = Console()
+from axon.utils.console import console
 
 
 def validate_python_code(code: str) -> str | None:
@@ -152,8 +151,15 @@ async def build_task(
     task: str,
     model: str | None = None,
     confirm_write: bool = True,
+    output_callback: Callable[[str], None] | None = None,
 ) -> list[str]:
     provider = get_llm_provider()
+
+    def _emit(text: str) -> None:
+        if output_callback:
+            output_callback(text)
+        else:
+            console.print(text)
 
     try:
         tree = get_directory_tree(max_depth=2)
@@ -195,30 +201,22 @@ Only report back to the user once the command runs successfully, or if you have 
         iteration_count += 1
 
         if iteration_count > 15:
-            console.print(
-                "[bold red]Axon hit the maximum iteration limit (15).[/bold red]"
-            )
+            _emit("[bold red]Axon hit the maximum iteration limit (15).[/bold red]")
             return written_files
 
-        with console.status("[bold cyan]Axon is thinking...[/bold cyan]"):
-            try:
-                response = await provider.chat(messages, model=model, tools=tools)
-            except Exception as e:
-                console.print(f"[bold red]API Error Details:[/bold red] {str(e)}")
-                return written_files
+        _emit("[bold cyan]Thinking...[/bold cyan]")
+        try:
+            response = await provider.chat(messages, model=model, tools=tools)
+        except Exception as e:
+            _emit(f"[bold red]API Error Details:[/bold red] {str(e)}")
+            return written_files
 
         choice = response.choices[0]
         tool_calls = getattr(choice.message, "tool_calls", []) or []
         content = getattr(choice.message, "content", None)
 
         if content and content.strip():
-            console.print(
-                Panel(
-                    Markdown(content),
-                    title="[bold]Axon[/bold]",
-                    border_style="blue",
-                )
-            )
+            _emit(content)
 
         if tool_calls:
             assistant_msg_dict = {
@@ -327,12 +325,12 @@ Only report back to the user once the command runs successfully, or if you have 
                     file_content = args.get("content")
 
                     if not filepath:
-                        console.print(
+                        _emit(
                             f"[bold red]Error writing file:[/bold red] filepath parameter is required"
                         )
                         tool_result = "Error: filepath parameter is required"
                     elif file_content is None:
-                        console.print(
+                        _emit(
                             f"[bold red]Error writing file:[/bold red] content parameter is required"
                         )
                         tool_result = "Error: content parameter is required"
@@ -340,7 +338,7 @@ Only report back to the user once the command runs successfully, or if you have 
                         syntax_error = validate_python_code(file_content)
                         if syntax_error:
                             tool_result = f"SyntaxError detected before writing:\n{syntax_error}Please fix the syntax and try again."
-                            console.print(
+                            _emit(
                                 f"[bold red]Syntax Error detected:[/bold red] {filepath}"
                             )
                         elif confirm_write:
@@ -353,7 +351,7 @@ Only report back to the user once the command runs successfully, or if you have 
                                     path.parent.mkdir(parents=True, exist_ok=True)
                                     path.write_text(file_content)
                                     written_files.append(filepath)
-                                    console.print(
+                                    _emit(
                                         f"[bold green]File written successfully:[/bold green] {filepath}"
                                     )
                                     tool_result = (
@@ -361,7 +359,7 @@ Only report back to the user once the command runs successfully, or if you have 
                                     )
                                 except Exception as e:
                                     tool_result = f"Error writing file: {e}"
-                                    console.print(
+                                    _emit(
                                         f"[bold red]Error writing file:[/bold red] {e}"
                                     )
                             else:
@@ -372,15 +370,13 @@ Only report back to the user once the command runs successfully, or if you have 
                                 path.parent.mkdir(parents=True, exist_ok=True)
                                 path.write_text(file_content)
                                 written_files.append(filepath)
-                                console.print(
+                                _emit(
                                     f"[bold green]File written successfully:[/bold green] {filepath}"
                                 )
                                 tool_result = f"File written successfully: {filepath}"
                             except Exception as e:
                                 tool_result = f"Error writing file: {e}"
-                                console.print(
-                                    f"[bold red]Error writing file:[/bold red] {e}"
-                                )
+                                _emit(f"[bold red]Error writing file:[/bold red] {e}")
                     elif confirm_write:
                         from axon.cli.commands.build import ask_confirmation
 
@@ -391,15 +387,13 @@ Only report back to the user once the command runs successfully, or if you have 
                                 path.parent.mkdir(parents=True, exist_ok=True)
                                 path.write_text(file_content)
                                 written_files.append(filepath)
-                                console.print(
+                                _emit(
                                     f"[bold green]File written successfully:[/bold green] {filepath}"
                                 )
                                 tool_result = f"File written successfully: {filepath}"
                             except Exception as e:
                                 tool_result = f"Error writing file: {e}"
-                                console.print(
-                                    f"[bold red]Error writing file:[/bold red] {e}"
-                                )
+                                _emit(f"[bold red]Error writing file:[/bold red] {e}")
                         else:
                             tool_result = "User denied permission to write file."
                     else:
@@ -408,15 +402,13 @@ Only report back to the user once the command runs successfully, or if you have 
                             path.parent.mkdir(parents=True, exist_ok=True)
                             path.write_text(file_content)
                             written_files.append(filepath)
-                            console.print(
+                            _emit(
                                 f"[bold green]File written successfully:[/bold green] {filepath}"
                             )
                             tool_result = f"File written successfully: {filepath}"
                         except Exception as e:
                             tool_result = f"Error writing file: {e}"
-                            console.print(
-                                f"[bold red]Error writing file:[/bold red] {e}"
-                            )
+                            _emit(f"[bold red]Error writing file:[/bold red] {e}")
                     break
 
                 elif tc_name == "patch_file":
@@ -425,17 +417,17 @@ Only report back to the user once the command runs successfully, or if you have 
                     replace = args.get("replace")
 
                     if not filepath:
-                        console.print(
+                        _emit(
                             f"[bold red]Error patching file:[/bold red] filepath parameter is required"
                         )
                         tool_result = "Error: filepath parameter is required"
                     elif not search:
-                        console.print(
+                        _emit(
                             f"[bold red]Error patching file:[/bold red] search parameter is required"
                         )
                         tool_result = "Error: search parameter is required"
                     elif replace is None:
-                        console.print(
+                        _emit(
                             f"[bold red]Error patching file:[/bold red] replace parameter is required"
                         )
                         tool_result = "Error: replace parameter is required"
@@ -445,7 +437,7 @@ Only report back to the user once the command runs successfully, or if you have 
 
                             if search not in current_content:
                                 tool_result = "Error: Search string not found in file. Ensure exact whitespace and indentation match."
-                                console.print(
+                                _emit(
                                     f"[bold yellow]Search string not found in:[/bold yellow] {filepath}"
                                 )
                             else:
@@ -455,11 +447,11 @@ Only report back to the user once the command runs successfully, or if you have 
                                     syntax_error = validate_python_code(new_content)
                                     if syntax_error:
                                         tool_result = f"SyntaxError detected before patching:\n{syntax_error}Please fix the syntax and try again."
-                                        console.print(
+                                        _emit(
                                             f"[bold red]Syntax Error detected:[/bold red] {filepath}"
                                         )
                                     else:
-                                        console.print(
+                                        _emit(
                                             f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
                                         )
                                         allow = (
@@ -471,18 +463,16 @@ Only report back to the user once the command runs successfully, or if you have 
                                         if allow == "y":
                                             Path(filepath).write_text(new_content)
                                             tool_result = "File patched successfully."
-                                            console.print(
+                                            _emit(
                                                 f"[bold green]File patched successfully:[/bold green] {filepath}"
                                             )
                                         else:
                                             tool_result = (
                                                 "User denied permission to patch."
                                             )
-                                            console.print(
-                                                "[dim]Patch denied by user.[/dim]"
-                                            )
+                                            _emit("[dim]Patch denied by user.[/dim]")
                                 else:
-                                    console.print(
+                                    _emit(
                                         f"[bold red]⚠️ Axon wants to patch:[/bold red] [yellow]{filepath}[/yellow]"
                                     )
                                     allow = (
@@ -494,24 +484,20 @@ Only report back to the user once the command runs successfully, or if you have 
                                     if allow == "y":
                                         Path(filepath).write_text(new_content)
                                         tool_result = "File patched successfully."
-                                        console.print(
+                                        _emit(
                                             f"[bold green]File patched successfully:[/bold green] {filepath}"
                                         )
                                     else:
                                         tool_result = "User denied permission to patch."
-                                        console.print(
-                                            "[dim]Patch denied by user.[/dim]"
-                                        )
+                                        _emit("[dim]Patch denied by user.[/dim]")
                         except FileNotFoundError:
                             tool_result = f"Error: File not found: {filepath}"
-                            console.print(
+                            _emit(
                                 f"[bold red]Error patching file:[/bold red] {filepath} not found"
                             )
                         except Exception as e:
                             tool_result = f"Error patching file: {e}"
-                            console.print(
-                                f"[bold red]Error patching file:[/bold red] {e}"
-                            )
+                            _emit(f"[bold red]Error patching file:[/bold red] {e}")
 
                     messages.append(
                         ChatMessage(

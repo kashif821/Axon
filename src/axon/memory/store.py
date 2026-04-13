@@ -94,3 +94,19 @@ async def get_session(session_id: uuid.UUID) -> Session | None:
         statement = select(Session).where(Session.id == session_id)
         result = await session_obj.execute(statement)
         return result.scalar_one_or_none()
+
+
+async def get_recent_actions(limit: int = 20) -> list[ActionLog]:
+    async with async_session_factory() as session_obj:
+        statement = select(ActionLog).order_by(ActionLog.timestamp.desc()).limit(limit)
+        result = await session_obj.execute(statement)
+        return list(result.scalars().all())
+
+
+async def get_recent_file_changes(limit: int = 20) -> list[FileChange]:
+    async with async_session_factory() as session_obj:
+        statement = (
+            select(FileChange).order_by(FileChange.timestamp.desc()).limit(limit)
+        )
+        result = await session_obj.execute(statement)
+        return list(result.scalars().all())

@@ -2,15 +2,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Confirm
 
 from axon.agent.builder import build_task
 from axon.llm.providers import LLMConfigurationError, LLMError
-
-
-console = Console()
+from axon.utils.console import console, create_axon_layout, update_layout_content
 
 
 def ask_confirmation(filepath: str) -> bool:
@@ -21,26 +19,42 @@ def ask_confirmation(filepath: str) -> bool:
 
 
 async def run_build(task: str, model: Optional[str] = None) -> None:
-    try:
-        written_files = await build_task(task, model=model)
+    layout = create_axon_layout(
+        current_model=model or "openai/moonshotai/kimi-k2-thinking"
+    )
+    modified_files: list[str] = []
+    tokens_used = 0
+    output_buffer = ""
 
-        if written_files:
-            console.print(
-                Panel(
-                    f"[bold green]Successfully created {len(written_files)} file(s):[/bold green]\n"
-                    + "\n".join(f"  - {f}" for f in written_files),
-                    border_style="green",
-                    title="[bold]Build Complete[/bold]",
-                )
+    def update_output(new_content: str) -> None:
+        nonlocal output_buffer
+        output_buffer += new_content + "\n"
+        layout["main"].update(
+            Panel(
+                output_buffer,
+                title="[bold]Axon Builder[/bold]",
+                border_style="blue",
+                padding=(1, 1),
             )
-        else:
-            console.print(
-                Panel(
-                    "[dim]No files were written.[/dim]",
-                    border_style="yellow",
-                    title="[bold]Build Complete[/bold]",
-                )
+        )
+
+    try:
+        with Live(layout, console=console, refresh_per_second=4, transient=False):
+            written_files = await build_task(
+                task, model=model, output_callback=update_output
             )
+            modified_files = written_files
+
+            if written_files:
+                update_output(
+                    f"[bold green]Successfully created {len(written_files)} file(s):[/bold green]\n\n"
+                    + "\n".join(f"  - {f}" for f in written_files)
+                    + "\n\n[dim]Build complete![/dim]"
+                )
+            else:
+                update_output(
+                    "[dim]No files were written.[/dim]\n\n[dim]Build complete![/dim]"
+                )
 
     except LLMConfigurationError as e:
         console.print(

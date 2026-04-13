@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 
 from axon.agent.planner import generate_plan
 from axon.llm.providers import LLMConfigurationError, LLMError
-
-
-console = Console()
+from axon.utils.console import console
 
 
 async def stream_plan(
