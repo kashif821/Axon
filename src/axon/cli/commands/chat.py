@@ -6,7 +6,6 @@ from typing import AsyncIterator
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import InMemoryHistory
-from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -22,9 +21,8 @@ from axon.memory.store import (
     get_session_history,
     log_action,
 )
+from axon.utils.console import console
 
-
-console = Console()
 _history = InMemoryHistory()
 
 
@@ -44,7 +42,7 @@ async def stream_response(
 
             reasoning = chunk.reasoning_content
             if reasoning:
-                console.print(f"[dim]{reasoning}[/dim]", end="", flush=True)
+                console.print(f"[dim]{reasoning}[/dim]", end="")
     except LLMError as e:
         raise
 
