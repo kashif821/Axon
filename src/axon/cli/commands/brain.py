@@ -3,6 +3,7 @@ from __future__ import annotations
 from rich.panel import Panel
 from rich.table import Table
 
+from axon.agent.brain import run_brain_mode
 from axon.memory.store import get_all_sessions
 from axon.utils.console import console
 
@@ -10,11 +11,13 @@ from axon.utils.console import console
 async def manage_brain(subcommand: str = "status") -> None:
     if subcommand == "status":
         await _show_status()
+    elif subcommand == "start":
+        await run_brain_mode()
     else:
         console.print(
             Panel(
                 f"[bold red]Unknown subcommand:[/bold red] {subcommand}\n\n"
-                "Available subcommands: status",
+                "Available subcommands: status, start",
                 border_style="red",
                 title="[bold]Error[/bold]",
             )

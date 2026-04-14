@@ -1,0 +1,12 @@
+default_provider: gemini
+default_model: gemini/gemini-2.5-flash
+providers:
+  planner: gemini/gemini-2.5-flash
+  builder: groq/llama-3.3-70b-versatile
+  brain: gemini/gemini-2.5-flash
+brain:
+  idle_seconds: 180
+  max_files: 10
+limits:
+  max_tokens: 8000
+  max_iterations: 15

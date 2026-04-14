@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 
 import litellm
 from litellm import AuthenticationError, RateLimitError, BadRequestError
@@ -13,7 +13,6 @@ litellm.set_verbose = False
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
-from axon.config.settings import settings
 from axon.llm.base import (
     ChatCompletionResponse,
     ChatMessage,
@@ -30,13 +29,8 @@ from axon.llm.base import (
 
 
 class LiteLLMProvider(LLMProvider):
-    def __init__(self, default_model: str = "gpt-4o-mini"):
+    def __init__(self, default_model: str):
         self._default_model = default_model
-        self._fallback_models = [
-            {"model": "groq/llama-3.1-8b-instant"},
-            {"model": "openai/gpt-4o-mini"},
-            {"model": "anthropic/claude-3-haiku-20240307"},
-        ]
 
     @property
     def provider_name(self) -> str:
@@ -45,6 +39,21 @@ class LiteLLMProvider(LLMProvider):
     @property
     def default_model(self) -> str:
         return self._default_model
+
+    def _get_litellm_kwargs(self, model: str) -> dict:
+        from axon.config.loader import get_api_base, get_env_key
+        import os
+
+        kwargs = {}
+        api_base = get_api_base(model)
+        if api_base:
+            kwargs["api_base"] = api_base
+        env_key = get_env_key(model)
+        if env_key:
+            api_key = os.getenv(env_key)
+            if api_key:
+                kwargs["api_key"] = api_key
+        return kwargs
 
     async def chat(
         self,
@@ -56,22 +65,8 @@ class LiteLLMProvider(LLMProvider):
     ) -> ChatCompletionResponse:
         model = model or self._default_model
 
-        litellm_messages = []
-        for msg in messages:
-            if isinstance(msg, dict):
-                litellm_messages.append(msg)
-            else:
-                msg_dict = {
-                    "role": msg.role.value if hasattr(msg.role, "value") else msg.role,
-                    "content": msg.content,
-                }
-                if getattr(msg, "tool_calls", None):
-                    msg_dict["tool_calls"] = msg.tool_calls
-                if getattr(msg, "tool_call_id", None):
-                    msg_dict["tool_call_id"] = msg.tool_call_id
-                if getattr(msg, "name", None):
-                    msg_dict["name"] = msg.name
-                litellm_messages.append(msg_dict)
+        litellm_messages = self._prepare_messages(messages)
+        litellm_kwargs = self._get_litellm_kwargs(model)
 
         try:
             response = await litellm.acompletion(
@@ -80,24 +75,24 @@ class LiteLLMProvider(LLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 tools=tools,
-                fallbacks=self._fallback_models,
-                api_base="https://integrate.api.nvidia.com/v1",
-                api_key=os.getenv("NVIDIA_API_KEY"),
+                **litellm_kwargs,
             )
 
             return self._parse_response(response)
 
         except AuthenticationError as e:
             raise LLMConfigurationError(
-                f"Authentication failed. Please check your API key for {model.split('/')[0]}. "
-                f"Update your .env file with the correct API key."
+                f"Model {model} failed: missing or invalid API key. "
+                f"Set the appropriate API key in your .env file."
             ) from e
         except RateLimitError as e:
-            raise LLMError(f"Rate limit exceeded. Please try again later.") from e
+            raise LLMError(
+                f"Model {model} failed: rate limit exceeded. Please try again later."
+            ) from e
         except BadRequestError as e:
-            raise LLMError(f"Bad request: {e}") from e
+            raise LLMError(f"Model {model} failed: bad request - {e}") from e
         except Exception as e:
-            raise LLMError(f"Unexpected error during LLM call: {e}") from e
+            raise LLMError(f"Model {model} failed: {e}") from e
 
     async def stream(
         self,
@@ -108,6 +103,37 @@ class LiteLLMProvider(LLMProvider):
     ) -> AsyncIterator[StreamResponse]:
         model = model or self._default_model
 
+        litellm_messages = self._prepare_messages(messages)
+        litellm_kwargs = self._get_litellm_kwargs(model)
+
+        try:
+            response = await litellm.acompletion(
+                model=model,
+                messages=litellm_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                **litellm_kwargs,
+            )
+
+            async for chunk in response:
+                yield self._parse_stream_chunk(chunk)
+
+        except AuthenticationError as e:
+            raise LLMConfigurationError(
+                f"Model {model} failed: missing or invalid API key. "
+                f"Set the appropriate API key in your .env file."
+            ) from e
+        except RateLimitError as e:
+            raise LLMError(
+                f"Model {model} failed: rate limit exceeded. Please try again later."
+            ) from e
+        except BadRequestError as e:
+            raise LLMError(f"Model {model} failed: bad request - {e}") from e
+        except Exception as e:
+            raise LLMError(f"Model {model} failed: {e}") from e
+
+    def _prepare_messages(self, messages: list[ChatMessage]) -> list[dict]:
         litellm_messages = []
         for msg in messages:
             if isinstance(msg, dict):
@@ -124,33 +150,7 @@ class LiteLLMProvider(LLMProvider):
                 if getattr(msg, "name", None):
                     msg_dict["name"] = msg.name
                 litellm_messages.append(msg_dict)
-
-        try:
-            response = await litellm.acompletion(
-                model=model,
-                messages=litellm_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                fallbacks=self._fallback_models,
-                api_base="https://integrate.api.nvidia.com/v1",
-                api_key=os.getenv("NVIDIA_API_KEY"),
-            )
-
-            async for chunk in response:
-                yield self._parse_stream_chunk(chunk)
-
-        except AuthenticationError as e:
-            raise LLMConfigurationError(
-                f"Authentication failed. Please check your API key for {model.split('/')[0]}. "
-                f"Update your .env file with the correct API key."
-            ) from e
-        except RateLimitError as e:
-            raise LLMError(f"Rate limit exceeded. Please try again later.") from e
-        except BadRequestError as e:
-            raise LLMError(f"Bad request: {e}") from e
-        except Exception as e:
-            raise LLMError(f"Unexpected error during streaming LLM call: {e}") from e
+        return litellm_messages
 
     def _parse_response(self, response: Any) -> ChatCompletionResponse:
         choice = response["choices"][0]
@@ -251,29 +251,19 @@ class LLMConfigurationError(LLMError):
     pass
 
 
-_llm_provider: LLMProvider | None = None
+_llm_provider: Optional[LiteLLMProvider] = None
 
 
-def get_llm_provider() -> LLMProvider:
+def get_llm_provider(model: Optional[str] = None) -> LiteLLMProvider:
     global _llm_provider
-    if _llm_provider is None:
-        default_model = _get_default_model()
-        _llm_provider = LiteLLMProvider(default_model=default_model)
+
+    if not model:
+        from axon.config.loader import get_config
+
+        config = get_config()
+        model = config.default_model
+
+    if _llm_provider is None or _llm_provider.default_model != model:
+        _llm_provider = LiteLLMProvider(default_model=model)
+
     return _llm_provider
-
-
-def _get_default_model() -> str:
-    if settings.nvidia_api_key and settings.nvidia_api_key != "your_nvidia_key_here":
-        return "openai/moonshotai/kimi-k2-thinking"
-    elif settings.gemini_api_key and settings.gemini_api_key != "your_gemini_key_here":
-        return "gemini/gemini-2.5-flash"
-    elif settings.openai_api_key and settings.openai_api_key != "your_openai_key_here":
-        return "gpt-4o-mini"
-    elif (
-        settings.anthropic_api_key
-        and settings.anthropic_api_key != "your_anthropic_key_here"
-    ):
-        return "claude-3-haiku-20240307"
-    elif settings.groq_api_key and settings.groq_api_key != "your_groq_key_here":
-        return "groq/llama-3.1-8b-instant"
-    return "openai/moonshotai/kimi-k2-thinking"

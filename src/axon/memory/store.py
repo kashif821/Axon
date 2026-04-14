@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlmodel import select, SQLModel
 
 from axon.config.settings import settings
-from axon.memory.schema import ActionLog, FileChange, Session
+from axon.memory.schema import ActionLog, FileChange, Session, Summary
 
 db_path = Path(settings.axon_db_path)
 db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,5 +108,30 @@ async def get_recent_file_changes(limit: int = 20) -> list[FileChange]:
         statement = (
             select(FileChange).order_by(FileChange.timestamp.desc()).limit(limit)
         )
+        result = await session_obj.execute(statement)
+        return list(result.scalars().all())
+
+
+async def save_summary(
+    content: str, files: list[str], summary_type: str = "brain"
+) -> Summary:
+    import json
+
+    summary = Summary(
+        content=content,
+        files=json.dumps(files),
+        type=summary_type,
+    )
+
+    async with async_session_factory() as session_obj:
+        session_obj.add(summary)
+        await session_obj.commit()
+        await session_obj.refresh(summary)
+        return summary
+
+
+async def get_recent_summaries(limit: int = 10) -> list[Summary]:
+    async with async_session_factory() as session_obj:
+        statement = select(Summary).order_by(Summary.timestamp.desc()).limit(limit)
         result = await session_obj.execute(statement)
         return list(result.scalars().all())

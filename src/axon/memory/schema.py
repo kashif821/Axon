@@ -34,3 +34,13 @@ class FileChange(SQLModel, table=True):
     filepath: str = ""
     action: str = ""
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Summary(SQLModel, table=True):
+    __tablename__ = "summaries"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    content: str = ""
+    files: str = "[]"
+    type: str = "brain"
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
