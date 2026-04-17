@@ -26,87 +26,56 @@ class ModelCommandProvider(Provider):
     """Provides dynamic commands to switch LLM models based on available .env keys."""
 
     async def search(self, query: str) -> Hits:
-        load_dotenv()
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except ImportError:
+            pass
+
+        import os
+
         matcher = self.matcher(query)
+        available_models = {}
 
-        # Build model list with beautiful display names
-        models = []
+        # Dynamically scan the environment for ANY variable ending in _MODELS
+        for env_key, env_value in os.environ.items():
+            if env_key.endswith("_MODELS") and env_value:
+                # Split the comma-separated list from the .env file
+                model_strings = [m.strip() for m in env_value.split(",") if m.strip()]
 
-        # Gemini models
-        gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if gemini_key:
-            models.extend(
-                [
-                    ("gemini/gemini-2.5-flash", "Google Gemini 2.5 Flash"),
-                    ("gemini/gemini-2.5-pro", "Google Gemini 2.5 Pro"),
-                    ("gemini/gemini-1.5-pro", "Google Gemini 1.5 Pro"),
-                ]
-            )
+                for raw_id in model_strings:
+                    # Auto-generate a pretty name (e.g., "gemini-2.5-flash (via gemini)")
+                    parts = raw_id.split("/")
+                    pretty_name = parts[-1] if len(parts) > 1 else raw_id
+                    provider = (
+                        parts[0].replace("_nim", "") if len(parts) > 1 else "local"
+                    )
 
-        # Groq models
-        groq_key = os.getenv("GROQ_API_KEY")
-        if groq_key:
-            models.extend(
-                [
-                    ("groq/llama-3.1-70b-versatile", "Groq Llama 3.1 70B"),
-                    ("groq/llama3-70b-8192", "Groq Llama 3 70B"),
-                    ("groq/mixtral-8x7b-32768", "Groq Mixtral 8x7B"),
-                ]
-            )
+                    available_models[raw_id] = f"{pretty_name} (via {provider})"
 
-        # Nvidia NIM
-        nvidia_key = os.getenv("NVIDIA_API_KEY") or os.getenv("NVIDIA_NIM_API_KEY")
-        if nvidia_key:
-            models.extend(
-                [
-                    (
-                        "nvidia_nim/meta/llama-3.1-70b-instruct",
-                        "Nvidia NIM Llama 3.1 70B",
-                    ),
-                    ("nvidia_nim/nv-llama-3.1-70b-instruct", "Nvidia Llama 3.1 70B"),
-                ]
-            )
+        if not available_models:
+            available_models["gemini/gemini-2.5-flash"] = "gemini-2.5-flash (Fallback)"
 
-        # Moonshot / Kimi
-        moonshot_key = os.getenv("MOONSHOT_API_KEY") or os.getenv("KIMI_API_KEY")
-        if moonshot_key:
-            models.extend(
-                [
-                    ("moonshot/moonshot-v1-8k", "Moonshot Kimi K1.5"),
-                    ("moonshot/moonshot-v1-128k", "Moonshot Kimi 128K"),
-                ]
-            )
+        for raw_id, pretty_name in available_models.items():
+            display = f"Set Model: {pretty_name}"
 
-        # OpenAI (always available if key set)
-        if os.getenv("OPENAI_API_KEY"):
-            models.extend(
-                [
-                    ("openai/gpt-4o", "OpenAI GPT-4o"),
-                    ("openai/gpt-4o-mini", "OpenAI GPT-4o Mini"),
-                ]
-            )
-
-        # Anthropic
-        if os.getenv("ANTHROPIC_API_KEY"):
-            models.extend(
-                [
-                    ("anthropic/claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
-                    ("anthropic/claude-3-opus-20240229", "Claude 3 Opus"),
-                ]
-            )
-
-        if not models:
-            models = [("gemini/gemini-2.5-flash", "Google Gemini 2.5 Flash (Demo)")]
-
-        for model_id, display_name in models:
-            score = matcher.match(display_name)
-            if score > 0:
+            if not query:
                 yield Hit(
-                    score,
-                    matcher.highlight(display_name),
-                    lambda m=model_id: self.app.switch_active_model(m),
-                    help=f"Provider: {model_id.split('/')[0].replace('_nim', ' NIM')}",
+                    1.0,
+                    display,
+                    lambda m=raw_id: self.app.switch_active_model(m),
+                    help=f"Provider: {raw_id.split('/')[0]}",
                 )
+            else:
+                score = matcher.match(display)
+                if score > 0:
+                    yield Hit(
+                        score,
+                        matcher.highlight(display),
+                        lambda m=raw_id: self.app.switch_active_model(m),
+                        help=f"Provider: {raw_id.split('/')[0]}",
+                    )
 
 
 class AxonApp(App):
@@ -140,8 +109,12 @@ class AxonApp(App):
 
     current_mode = reactive("chat")
     token_variant = reactive("high")
-    model = None
-    current_session = None
+    current_session_id = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model = "gemini/gemini-2.5-flash"
+        self.current_session_id = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-layout"):
@@ -188,55 +161,52 @@ class AxonApp(App):
     def on_mount(self) -> None:
         self.query_one("#chat-input").focus()
         self.update_status_line()
-        self.query_one("#chat-log", RichLog).write(
-            "System: UI Initialized. Connecting to memory..."
-        )
 
-        # Trigger the database fetch
-        self.fetch_sidebar_data()
+        # Start the real-time polling loop (runs every 2 seconds)
+        self.set_interval(2.0, self.fetch_sidebar_data)
 
-        # Real-time sidebar polling every 5 seconds
-        self.set_interval(5, self.fetch_sidebar_data)
+        # Do an immediate initial fetch
+        self.run_worker(self.fetch_sidebar_data())
 
-    @work
     async def fetch_sidebar_data(self) -> None:
+        """Polls SQLite and updates the sidebar UI in real-time."""
         import os, aiosqlite
 
-        db_path = os.path.expanduser("~/.axon/memory.sqlite")
         cwd = os.getcwd()
+        try:
+            self.query_one("#sidebar-workspace", Static).update(
+                f"[bold]Workspace[/bold]\n[dim]{cwd}[/dim]"
+            )
+        except Exception:
+            pass
+
+        db_path = os.path.expanduser("~/.axon/memory.sqlite")
+        if not os.path.exists(db_path):
+            return
 
         try:
-            self.call_from_thread(
-                self.query_one("#sidebar-workspace", Static).update,
-                f"[bold]Workspace[/bold]\n[dim]{cwd}[/dim]",
-            )
-
             async with aiosqlite.connect(db_path) as db:
                 db.row_factory = aiosqlite.Row
-
-                # Count Total Sessions
                 async with db.execute(
                     "SELECT COUNT(*) as count FROM sessions"
                 ) as cursor:
                     row = await cursor.fetchone()
                     session_count = row["count"] if row else 0
 
-                # Current Session Tokens
                 tokens = 0
-                if getattr(self, "current_session", None):
+                session_id = getattr(self, "current_session_id", None)
+                if session_id:
                     async with db.execute(
                         "SELECT SUM(LENGTH(content)) as total FROM action_logs WHERE session_id = ?",
-                        (self.current_session,),
+                        (session_id,),
                     ) as cursor:
                         row = await cursor.fetchone()
                         tokens = (row["total"] // 4) if row and row["total"] else 0
 
-                self.call_from_thread(
-                    self.query_one("#sidebar-context", Static).update,
-                    f"[bold]Context[/bold]\n{tokens:,} tokens\n{session_count} sessions\n",
+                self.query_one("#sidebar-context", Static).update(
+                    f"[bold]Context[/bold]\n{tokens:,} tokens\n{session_count} sessions\n"
                 )
 
-                # Idle Agent
                 async with db.execute(
                     "SELECT content FROM summaries ORDER BY timestamp DESC LIMIT 1"
                 ) as cursor:
@@ -244,21 +214,11 @@ class AxonApp(App):
                     agent_text = (
                         row["content"][:50] + "..." if row else "Observing workspace..."
                     )
-                    self.call_from_thread(
-                        self.query_one("#sidebar-agent", Static).update,
-                        f"[bold]Idle Agent[/bold]\n{agent_text}\n",
+                    self.query_one("#sidebar-agent", Static).update(
+                        f"[bold]Idle Agent[/bold]\n{agent_text}\n"
                     )
         except Exception:
             pass
-
-        except Exception as e:
-            # Silently fail if DB is locked or missing
-            try:
-                self.query_one("#sidebar-context", Static).update(
-                    f"[bold]Context[/bold]\nMemory unavailable"
-                )
-            except Exception:
-                pass
 
     def action_cycle_mode(self) -> None:
         modes = ["chat", "plan", "build"]
@@ -318,14 +278,12 @@ class AxonApp(App):
             self.notify("Command palette coming soon!", title="Axon")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Fired when the user presses Enter."""
         user_text = event.value.strip()
         if not user_text:
             return
         event.input.value = ""
         chat_log = self.query_one("#chat-log", RichLog)
 
-        # Handle local slash commands
         if user_text.lower() == "/sessions":
             import os, aiosqlite
 
@@ -343,30 +301,36 @@ class AxonApp(App):
 
         if user_text.lower().startswith("/load "):
             chat_log.write(
-                "\n[bold yellow]System: Session loading coming soon via ID lookup.[/bold yellow]"
+                "\n[bold yellow]System: Session loading coming soon.[/bold yellow]"
             )
             return
 
-        if user_text.lower() == "/delete":
+        # AUTO-CREATE SESSION IF IT DOESN'T EXIST
+        if not getattr(self, "current_session_id", None):
+            import uuid, os, aiosqlite
+            from datetime import datetime
+
             db_path = os.path.expanduser("~/.axon/memory.sqlite")
+            self.current_session_id = uuid.uuid4().hex
+            now = datetime.now().isoformat()
+
             try:
                 async with aiosqlite.connect(db_path) as db:
                     await db.execute(
-                        "DELETE FROM action_logs WHERE session_id = ?",
-                        (self.current_session,),
+                        "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                        (self.current_session_id, user_text[:30] + "...", now, now),
                     )
                     await db.commit()
-                chat_log.write("[bold red]System: Session deleted.[/bold red]")
-            except Exception:
-                chat_log.write("[bold red]System: No session to delete.[/bold red]")
-            return
+            except Exception as e:
+                chat_log.write(
+                    f"[red]Memory Error: Could not create session: {e}[/red]"
+                )
 
-        # Fire the background worker
         self.stream_llm_response(user_text)
 
     @work(thread=True)
     async def stream_llm_response(self, prompt: str) -> None:
-        import re, os
+        import re, os, asyncio
 
         chat_log = self.query_one("#chat-log", RichLog)
         live_stream = self.query_one("#live-stream", Static)
@@ -375,11 +339,9 @@ class AxonApp(App):
             f"\n[bold cyan]You ({self.current_mode}):[/bold cyan] {prompt}",
         )
 
-        # 1. STRICT VARIANT LIMITS (Controls API Usage)
         variant_caps = {"normal": 300, "high": 1500, "max": 6000}
         token_cap = variant_caps.get(self.token_variant, 300)
 
-        # 2. MODE PROMPTS (Controls Output Style)
         if self.current_mode == "build":
             sys_prompt = "You are a senior developer. Output ONLY valid code inside a single markdown code block. Do not explain the code."
         elif self.current_mode == "plan":
@@ -388,7 +350,12 @@ class AxonApp(App):
             sys_prompt = "You are a concise AI. Answer briefly."
 
         try:
-            provider = get_llm_provider(model=self.model)
+            from axon.llm.providers import get_llm_provider
+            from axon.llm.base import ChatMessage, MessageRole
+
+            provider = get_llm_provider(
+                model=getattr(self, "model", "gemini/gemini-2.5-flash")
+            )
             messages = [
                 ChatMessage(role=MessageRole.SYSTEM, content=sys_prompt),
                 ChatMessage(role=MessageRole.USER, content=prompt),
@@ -396,13 +363,15 @@ class AxonApp(App):
             buffer = ""
 
             async for chunk in provider.stream(
-                messages, model=self.model, max_tokens=token_cap
+                messages,
+                model=getattr(self, "model", "gemini/gemini-2.5-flash"),
+                max_tokens=token_cap,
             ):
                 if delta := chunk.choices[0].delta.content:
                     buffer += delta
                     self.call_from_thread(
                         live_stream.update,
-                        f"[bold green]Axon ({self.token_variant} tokens):[/bold green]\n{buffer}",
+                        f"[bold green]Axon ({self.token_variant}):[/bold green]\n{buffer}",
                     )
 
             if buffer:
@@ -411,7 +380,6 @@ class AxonApp(App):
                 )
                 self.call_from_thread(live_stream.update, "")
 
-                # 3. THE BUILDER: Physically create the file
                 if self.current_mode == "build":
                     code_blocks = re.findall(r"```.*?\n(.*?)```", buffer, re.DOTALL)
                     if code_blocks:
@@ -421,7 +389,6 @@ class AxonApp(App):
                             for i, w in enumerate(words):
                                 if "name" in w and i + 1 < len(words):
                                     filename = words[i + 1].strip("'\".,")
-
                         filepath = os.path.join(os.getcwd(), filename)
                         with open(filepath, "w") as f:
                             f.write(code_blocks[0].strip())
@@ -430,12 +397,37 @@ class AxonApp(App):
                             f"[bold blue]System: File successfully written to {filepath}[/bold blue]",
                         )
 
-            self.call_from_thread(self.fetch_sidebar_data)
+                # BULLETPROOF SQLITE LOGGING
+                session_id = getattr(self, "current_session_id", None)
+                if session_id:
+                    import aiosqlite
+                    from datetime import datetime
+
+                    db_path = os.path.expanduser("~/.axon/memory.sqlite")
+
+                    try:
+
+                        async def save_logs():
+                            async with aiosqlite.connect(db_path) as db:
+                                now = datetime.now().isoformat()
+                                await db.execute(
+                                    "INSERT INTO action_logs (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                                    (session_id, "user", prompt, now),
+                                )
+                                await db.execute(
+                                    "INSERT INTO action_logs (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                                    (session_id, "assistant", buffer, now),
+                                )
+                                await db.commit()
+
+                        # Schedule the async function on the app's event loop
+                        asyncio.get_event_loop().run_until_complete(save_logs())
+                    except Exception:
+                        pass
+
         except Exception as e:
             self.call_from_thread(live_stream.update, "")
             error_str = str(e)
-
-            # Catch ugly litellm rate limit errors
             if (
                 "429" in error_str
                 or "RateLimitError" in error_str
@@ -444,31 +436,10 @@ class AxonApp(App):
                 clean_error = "\n[bold orange3]System: API Rate Limit Reached. Please wait ~60 seconds before sending another prompt.[/bold orange3]"
                 self.call_from_thread(chat_log.write, clean_error)
             else:
-                # Fallback for other errors (shortened to keep UI clean)
                 self.call_from_thread(
                     chat_log.write,
-                    f"\n[bold red]API Error:[/bold red] {error_str[:200]}...",
+                    f"\n[bold red]Error:[/bold red] {error_str[:200]}...",
                 )
-
-            # Log to SQLite
-            if hasattr(self, "current_session") and self.current_session:
-                asyncio.run_coroutine_threadsafe(
-                    log_action(self.current_session, "user", prompt), self.app._loop
-                )
-                asyncio.run_coroutine_threadsafe(
-                    log_action(
-                        self.current_session, "assistant", "Response generated."
-                    ),
-                    self.app._loop,
-                )
-
-            self.call_from_thread(self.fetch_sidebar_data)
-
-        except Exception as e:
-            self.call_from_thread(live_stream.update, "")
-            self.call_from_thread(
-                chat_log.write, f"\n[bold red]API Error:[/bold red] {str(e)}"
-            )
 
 
 async def run_chat_loop(model: str | None = None, session_id: str | None = None):
