@@ -1,10 +1,13 @@
-Axon: An autonomous, self-healing engineering partner.
+🧠 Axon
+An autonomous, self-healing engineering partner living directly in your terminal.
 
-🚀 Progress Log
-Day 1: Core Architect. Planner + Builder agents with multi-model handoff.
+Axon is a true pair programmer with a persistent memory cortex, an autonomous file-watching system, and a dynamic, reactive Terminal User Interface (TUI). It routes requests across multiple top-tier LLMs, patches code with surgical precision, and thinks in the background while you work.
 
-Day 2: Surgical Precision. patch_file tool, AST syntax validation, and shell integration.
+🚀 The 8-Day Sprint
+Axon went from a blank canvas to a fully reactive AI architect in an intense 8-day build:
 
-Day 3: Consciousness & Reasoning. Web fetch capabilities, autonomous self-correction loop, and integration with NVIDIA NIM (Kimi K2 Thinking).
+Days 1-3: Built the core Planner and Builder agents. Integrated the Kimi K2 reasoning engine, added AST syntax validation to safeguard code, and implemented surgical file patching.
 
-Day 4: The Cortex Upgrade. Persistent SQLite memory, intelligent background file watching, and autonomous idle summarization.
+Days 4-6: Deployed persistent SQLite memory and an intelligent background watcher. Axon now detects idle states and autonomously summarizes your workspace in the background.
+
+Days 7-8: Brought Axon to life visually. Engineered a reactive Textual TUI with a dynamic Command Palette for instant model hot-swapping (Gemini, Groq, Nvidia) and real-time database polling.
