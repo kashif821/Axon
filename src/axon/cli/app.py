@@ -95,6 +95,13 @@ def chat(
     """Start an interactive chat session with Axon."""
     import asyncio
 
+    from axon.memory.store import init_db
+    from axon.cli.commands.chat import run_chat_loop
+    from axon.config.loader import get_config, get_environment_keys
+    from axon.utils.console import console
+
+    asyncio.run(init_db())
+
     config = get_config()
     final_model = config.merge_cli(model=model)
     asyncio.run(run_chat_loop(model=final_model, session_id=session))
@@ -115,8 +122,11 @@ def ask(
     """Ask Axon about your recent activity."""
     import asyncio
 
+    from axon.memory.store import init_db
     from axon.cli.commands.ask import run_ask
+    from axon.config.loader import get_config
 
+    asyncio.run(init_db())
     config = get_config()
     final_model = config.merge_cli(model=model)
     asyncio.run(run_ask(question=question, model=final_model))
@@ -129,8 +139,10 @@ def brain(
     """Manage Axon's memory brain."""
     import asyncio
 
+    from axon.memory.store import init_db
     from axon.cli.commands.brain import manage_brain
 
+    asyncio.run(init_db())
     asyncio.run(manage_brain(subcommand=subcommand))
 
 
@@ -147,8 +159,11 @@ def build(
     """Build code based on a task description."""
     import asyncio
 
+    from axon.memory.store import init_db
     from axon.cli.commands.build import run_build
+    from axon.config.loader import get_config
 
+    asyncio.run(init_db())
     config = get_config()
     final_model = config.merge_cli(model=model)
     asyncio.run(run_build(task, model=final_model))
@@ -173,8 +188,11 @@ def plan(
     """Plan steps for a complex task."""
     import asyncio
 
+    from axon.memory.store import init_db
     from axon.cli.commands.plan import stream_plan
+    from axon.config.loader import get_config
 
+    asyncio.run(init_db())
     config = get_config()
     final_model = config.merge_cli(model=model)
     asyncio.run(stream_plan(task, model=final_model, execute=execute))

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -26,11 +25,52 @@ async_session_factory = sessionmaker(
 
 
 async def init_db() -> None:
+    import aiosqlite
+    from datetime import datetime
+
     db_dir = Path(settings.axon_db_path).parent
     db_dir.mkdir(parents=True, exist_ok=True)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+    async with aiosqlite.connect(settings.axon_db_path) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS action_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                role TEXT,
+                content TEXT,
+                timestamp TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                content TEXT,
+                files TEXT,
+                summary_type TEXT,
+                created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS file_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                filepath TEXT,
+                event_type TEXT,
+                lines_added INTEGER DEFAULT 0,
+                lines_removed INTEGER DEFAULT 0,
+                timestamp TEXT
+            )
+        """)
+        await db.commit()
 
 
 async def create_session(title: str) -> Session:
@@ -44,7 +84,7 @@ async def create_session(title: str) -> Session:
 
 
 async def log_action(
-    session_id: uuid.UUID,
+    session_id: str,
     role: str,
     content: str,
 ) -> ActionLog:
