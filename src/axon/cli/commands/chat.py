@@ -8,7 +8,8 @@ from textual.app import App, ComposeResult
 from textual.command import Provider, Hit, Hits
 from textual import work
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Input, RichLog, Static, Footer
+from textual.screen import ModalScreen
+from textual.widgets import Input, Button, Label, Select, RichLog, Static, Footer
 from textual.reactive import reactive
 from textual.binding import Binding
 
@@ -52,6 +53,34 @@ def get_yaml_models() -> list:
     except Exception:
         pass
     return []
+
+
+def build_fallback_chain(primary_model: str, config) -> list:
+    """Build a fallback chain sorted by cost (free/cheap first)."""
+    chain = [primary_model]
+
+    try:
+        providers = getattr(config, "providers", {})
+        for provider, models in providers.items():
+            if not isinstance(models, dict):
+                continue
+            for model_id, info in models.items():
+                if not isinstance(info, dict):
+                    continue
+                if model_id == primary_model:
+                    continue
+                cost = info.get("cost_in_1m", 999)
+                chain.append((model_id, cost))
+
+        # Sort by cost ascending (free/cheap first)
+        if len(chain) > 1:
+            chain[1:] = sorted(chain[1:], key=lambda x: x[1])
+            return [chain[0]] + [m[0] for m in chain[1:]]
+    except Exception:
+        pass
+
+    # Fallback to hardcoded list if config parsing fails
+    return [primary_model, "groq/llama3-8b-8192", "openai/gpt-4o-mini"]
 
 
 def get_all_available_models() -> dict:
@@ -342,6 +371,87 @@ class ModelCommandProvider(Provider):
                     )
 
 
+class APIKeyModal(ModalScreen):
+    """A beautiful dialog to update API keys directly from the UI."""
+
+    CSS = """
+    APIKeyModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.7);
+    }
+    #key-dialog {
+        width: 60;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    #key-dialog Horizontal {
+        height: auto;
+        align: right middle;
+        margin-top: 1;
+        gap: 1;
+    }
+    """
+
+    def compose(self):
+        with Vertical(id="key-dialog"):
+            yield Label(
+                "[bold]Configure API Keys[/bold]\nSelect a provider and paste your new key.",
+                classes="box",
+            )
+
+            yield Select(
+                [
+                    ("Google Gemini", "GEMINI_API_KEY"),
+                    ("OpenAI", "OPENAI_API_KEY"),
+                    ("Anthropic", "ANTHROPIC_API_KEY"),
+                    ("Groq", "GROQ_API_KEY"),
+                    ("NVIDIA NIM", "NVIDIA_NIM_API_KEY"),
+                    ("Together AI", "TOGETHER_API_KEY"),
+                ],
+                prompt="Select Provider",
+                id="provider-select",
+            )
+
+            yield Input(
+                placeholder="Paste your sk-... key here", password=True, id="key-input"
+            )
+
+            with Horizontal():
+                yield Button("Cancel", variant="error", id="cancel-btn")
+                yield Button("Save Key", variant="success", id="save-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel-btn":
+            self.dismiss()
+        elif event.button.id == "save-btn":
+            provider_env = self.query_one("#provider-select", Select).value
+            new_key = self.query_one("#key-input", Input).value
+
+            if provider_env and provider_env != Select.BLANK and new_key:
+                self.save_to_env(str(provider_env), new_key)
+                self.app.notify(f"Key saved for {provider_env}!", title="Success")
+                self.dismiss()
+            else:
+                self.app.notify(
+                    "Please select a provider and enter a key.", severity="error"
+                )
+
+    def save_to_env(self, key_name: str, key_value: str) -> None:
+        import os
+
+        try:
+            from dotenv import set_key
+
+            env_path = os.path.join(os.getcwd(), ".env")
+            if not os.path.exists(env_path):
+                open(env_path, "a").close()
+            set_key(env_path, key_name, key_value)
+        except ImportError:
+            self.app.notify("Please run: pip install python-dotenv", severity="error")
+
+
 class AxonApp(App):
     CSS = """
     Screen { background: #0d0d0d; }
@@ -404,6 +514,7 @@ class AxonApp(App):
         Binding("tab", "cycle_mode", "Switch Mode", priority=True),
         Binding("ctrl+t", "cycle_variant", "Variants", priority=True),
         Binding("ctrl+p", "command_palette", "Commands", priority=True),
+        Binding("ctrl+k", "open_keys", "API Keys", priority=True),
         Binding("ctrl+x l", "show_session_list", "Sessions", priority=True),
         Binding("ctrl+x n", "new_session", "New Session", priority=True),
         Binding("ctrl+r", "rename_session", "Rename", priority=True),
@@ -844,6 +955,23 @@ Model: {model_name}
             severity="information",
         )
         self.update_status_line()
+        self.update_header()
+
+    def action_switch_model(self, new_model_id: str, provider_name: str) -> None:
+        """Hot-swaps the active model and updates the UI."""
+        from textual.widgets import Static
+
+        self.model = new_model_id
+
+        # Update the status line immediately!
+        try:
+            self.update_status_line()
+        except Exception:
+            pass
+
+        # Force a sidebar fetch so the context math updates for the new model
+        self.run_worker(self.fetch_sidebar_data())
+        self.notify(f"Brain shifted to {new_model_id}", title="Model Switched")
 
     def action_prompt_custom_model(self) -> None:
         """Prompt user to enter a custom model string."""
@@ -903,6 +1031,10 @@ Model: {model_name}
             super().action_command_palette()
         except AttributeError:
             self.notify("Command palette coming soon!", title="Axon")
+
+    def action_open_keys(self) -> None:
+        """Opens the API Key configuration modal."""
+        self.push_screen(APIKeyModal())
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_text = event.value.strip()
@@ -1237,18 +1369,26 @@ Model: {model_name}
 
     @work(thread=True)
     async def stream_llm_response(self, prompt: str) -> None:
-        import re, os, asyncio
+        import litellm
 
         chat_log = self.query_one("#chat-log", RichLog)
         live_stream = self.query_one("#live-stream", Static)
+
+        # 1. Print the user's message
         self.call_from_thread(
             chat_log.write,
             f"\n[bold cyan]You ({self.current_mode}):[/bold cyan] {prompt}",
         )
+        self.call_from_thread(live_stream.update, "...")
 
-        variant_caps = {"normal": 300, "high": 1500, "max": 6000}
-        token_cap = variant_caps.get(self.token_variant, 300)
+        # 2. The Fallback Array (Primary -> Fast Free -> Cheap Reliable)
+        from axon.config.loader import get_config
 
+        config = get_config()
+        primary_model = getattr(self, "model", config.default_model)
+        models_to_try = build_fallback_chain(primary_model, config)
+
+        # Get system prompt based on mode
         if self.current_mode == "build":
             sys_prompt = "You are a senior developer. Output ONLY valid code inside a single markdown code block. Do not explain the code."
         elif self.current_mode == "plan":
@@ -1256,80 +1396,58 @@ Model: {model_name}
         else:
             sys_prompt = "You are a concise AI. Answer briefly."
 
-        try:
-            from axon.llm.providers import get_llm_provider
-            from axon.llm.base import ChatMessage, MessageRole
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": prompt},
+        ]
 
-            provider = get_llm_provider(
-                model=getattr(self, "model", "gemini/gemini-2.5-flash")
-            )
-            messages = [
-                ChatMessage(role=MessageRole.SYSTEM, content=sys_prompt),
-                ChatMessage(role=MessageRole.USER, content=prompt),
-            ]
-            buffer = ""
-            thinking_buffer = ""
-            response_obj = None
-            thinking_widget = None
-
-            # Try to find or create thinking display widget
+        # 3. The Waterfall Routing Loop
+        for current_model in models_to_try:
             try:
-                thinking_widget = self.query_one("#thinking-display", Static)
-            except Exception:
-                thinking_widget = None
-
-            async for chunk in provider.stream(
-                messages,
-                model=getattr(self, "model", "gemini/gemini-2.5-flash"),
-                max_tokens=token_cap,
-            ):
-                response_obj = chunk
-
-                # Extract thinking/reasoning content
-                thinking = extract_thinking(chunk)
-                if thinking:
-                    thinking_buffer += thinking
-                    if thinking_widget:
-                        self.call_from_thread(
-                            thinking_widget.update,
-                            f"[italic #555555]Thinking: {thinking_buffer[-200:]}...[/]",
-                        )
-
-                if delta := chunk.choices[0].delta.content:
-                    buffer += delta
+                if current_model != models_to_try[0]:
                     self.call_from_thread(
-                        live_stream.update,
-                        f"[bold green]Axon ({self.token_variant}):[/bold green]\n{buffer}",
+                        chat_log.write,
+                        f"[yellow]⚠️ Shifting brain to {current_model}...[/yellow]",
                     )
 
-            # Clear thinking display after response
-            if thinking_widget and thinking_buffer:
-                self.call_from_thread(thinking_widget.update, "")
+                variant_caps = {"normal": 300, "high": 1500, "max": 6000}
+                token_cap = variant_caps.get(self.token_variant, 300)
 
-            # Extract token usage from LiteLLM response
-            if response_obj:
-                usage = getattr(response_obj, "usage", None)
-                if usage:
-                    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-
-                    # Update running totals
-                    self.total_prompt_tokens += prompt_tokens
-                    self.total_completion_tokens += completion_tokens
-
-                    # Calculate cost dynamically
-                    model = getattr(self, "model", "gemini/gemini-2.5-flash")
-                    cost = get_cost(model, prompt_tokens, completion_tokens)
-                    self.total_cost += cost
-
-            if buffer:
-                self.call_from_thread(
-                    chat_log.write, f"[bold green]Axon:[/bold green]\n{buffer}"
+                response = await litellm.acompletion(
+                    model=current_model,
+                    messages=messages,
+                    stream=True,
+                    max_tokens=token_cap,
                 )
+
+                full_response = ""
+                async for chunk in response:
+                    content = chunk.choices[0].delta.content or ""
+                    full_response += content
+                    self.call_from_thread(
+                        live_stream.update,
+                        f"[bold green]Axon ({self.token_variant}):[/bold green]\n{full_response}",
+                    )
+
+                # Success! Write to persistent log and clear stream widget
                 self.call_from_thread(live_stream.update, "")
 
-                if self.current_mode == "build":
-                    code_blocks = re.findall(r"```.*?\n(.*?)```", buffer, re.DOTALL)
+                # Format the header based on the model that actually succeeded
+                provider_color = (
+                    "green" if current_model == models_to_try[0] else "yellow"
+                )
+                self.call_from_thread(
+                    chat_log.write,
+                    f"[bold {provider_color}]Axon ({current_model}):[/bold {provider_color}]\n{full_response}",
+                )
+
+                # Handle build mode - write code to file
+                if self.current_mode == "build" and full_response:
+                    import re
+
+                    code_blocks = re.findall(
+                        r"```.*?\n(.*?)```", full_response, re.DOTALL
+                    )
                     if code_blocks:
                         filename = "axon_build_output.py"
                         if "name" in prompt.lower():
@@ -1337,6 +1455,8 @@ Model: {model_name}
                             for i, w in enumerate(words):
                                 if "name" in w and i + 1 < len(words):
                                     filename = words[i + 1].strip("'\".,")
+                        import os
+
                         filepath = os.path.join(os.getcwd(), filename)
                         with open(filepath, "w") as f:
                             f.write(code_blocks[0].strip())
@@ -1345,7 +1465,18 @@ Model: {model_name}
                             f"[bold blue]System: File successfully written to {filepath}[/bold blue]",
                         )
 
-                # BULLETPROOF SQLITE LOGGING
+                # Extract token usage and update totals
+                if hasattr(response, "usage") and response.usage:
+                    prompt_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
+                    completion_tokens = (
+                        getattr(response.usage, "completion_tokens", 0) or 0
+                    )
+                    self.total_prompt_tokens += prompt_tokens
+                    self.total_completion_tokens += completion_tokens
+                    cost = get_cost(current_model, prompt_tokens, completion_tokens)
+                    self.total_cost += cost
+
+                # Save to SQLite
                 session_id = getattr(self, "current_session_id", None)
                 if session_id:
                     import aiosqlite
@@ -1354,7 +1485,6 @@ Model: {model_name}
                     db_path = os.path.expanduser("~/.axon/memory.sqlite")
 
                     async def save_logs():
-                        db_path = os.path.expanduser("~/.axon/memory.sqlite")
                         async with aiosqlite.connect(db_path) as db:
                             now = datetime.now().isoformat()
                             await db.execute(
@@ -1363,31 +1493,44 @@ Model: {model_name}
                             )
                             await db.execute(
                                 "INSERT INTO action_logs (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                                (str(session_id), "assistant", buffer, now),
+                                (str(session_id), "assistant", full_response, now),
                             )
                             await db.commit()
 
-                    # Use Textual's worker instead of run_until_complete
                     try:
                         self.run_worker(save_logs(), exclusive=False)
                     except Exception as e:
                         self.log(f"Failed to save logs: {e}")
 
-        except Exception as e:
-            self.call_from_thread(live_stream.update, "")
-            error_str = str(e)
-            if (
-                "429" in error_str
-                or "RateLimitError" in error_str
-                or "RESOURCE_EXHAUSTED" in error_str
-            ):
-                clean_error = "\n[bold orange3]System: API Rate Limit Reached. Please wait ~60 seconds before sending another prompt.[/bold orange3]"
-                self.call_from_thread(chat_log.write, clean_error)
-            else:
+                return  # Break out of the loop, we successfully generated text!
+
+            except litellm.exceptions.RateLimitError:
                 self.call_from_thread(
                     chat_log.write,
-                    f"\n[bold red]Error:[/bold red] {error_str[:200]}...",
+                    f"[dim red]Rate limit hit on {current_model}. Retrying...[/dim red]",
                 )
+                continue  # Loop to the next model
+
+            except Exception as e:
+                error_str = str(e)
+                if "rate" in error_str.lower() or "429" in error_str:
+                    self.call_from_thread(
+                        chat_log.write,
+                        f"[dim red]Rate limit on {current_model}. Trying next...[/dim red]",
+                    )
+                    continue
+                self.call_from_thread(
+                    chat_log.write,
+                    f"[dim red]API Error ({current_model}): {error_str[:50]}...[/dim red]",
+                )
+                continue  # Loop to the next model
+
+        # 4. Total Failure State
+        self.call_from_thread(live_stream.update, "")
+        self.call_from_thread(
+            chat_log.write,
+            "[bold red]❌ All fallback models failed. Please check your .env API keys or internet connection.[/bold red]",
+        )
 
 
 async def run_chat_loop(model: str | None = None, session_id: str | None = None):
