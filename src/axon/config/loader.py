@@ -41,6 +41,7 @@ class AxonConfig(BaseModel):
     default_model: str = "gemini/gemini-2.5-flash"
     modes: ModesConfig = Field(default_factory=ModesConfig)
     provider_configs: ProviderConfigs = Field(default_factory=ProviderConfigs)
+    providers: dict[str, Any] = Field(default_factory=dict)
     brain: dict[str, Any] = Field(
         default_factory=lambda: {"idle_seconds": 180, "max_files": 10}
     )
@@ -78,7 +79,8 @@ _loaded_config: Optional[AxonConfig] = None
 def load_config(search_path: str | None = None) -> AxonConfig:
     global _loaded_config
 
-    if _loaded_config is not None:
+    # Only use cache if providers are loaded
+    if _loaded_config is not None and _loaded_config.providers:
         return _loaded_config
 
     config_data = {
@@ -113,6 +115,9 @@ def load_config(search_path: str | None = None) -> AxonConfig:
                     user_config["provider_configs"] = ProviderConfigs(
                         **{k: ProviderConfig(**v) for k, v in user_providers.items()}
                     )
+                # Load providers as raw dict
+                if "providers" in user_config:
+                    config_data["providers"] = user_config["providers"]
                 config_data = _deep_merge(config_data, user_config)
                 break
             except Exception:

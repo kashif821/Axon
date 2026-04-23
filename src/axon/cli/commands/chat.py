@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import asyncio
 import os
@@ -7,9 +8,18 @@ from dotenv import load_dotenv
 from textual.app import App, ComposeResult
 from textual.command import Provider, Hit, Hits
 from textual import work
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Button, Label, Select, RichLog, Static, Footer
+from textual.widgets import (
+    Input,
+    Button,
+    Label,
+    Select,
+    RichLog,
+    Static,
+    Footer,
+    ListView,
+)
 from textual.reactive import reactive
 from textual.binding import Binding
 
@@ -55,32 +65,78 @@ def get_yaml_models() -> list:
     return []
 
 
+def is_valid_key(key_value: str | None) -> bool:
+    if not key_value:
+        return False
+    placeholders = [
+        "your_",
+        "sk-xxx",
+        "placeholder",
+        "example",
+        "xxx",
+        "your-key",
+        "api_key_here",
+        "insert_key",
+    ]
+    lower = key_value.lower()
+    return not any(p in lower for p in placeholders)
+
+
 def build_fallback_chain(primary_model: str, config) -> list:
-    """Build a fallback chain sorted by cost (free/cheap first)."""
+    """Build a fallback chain sorted by cost (free/cheap first), only including providers with valid API keys."""
+    import os
+    from axon.config.loader import get_environment_keys
+
+    PROVIDER_MAP = {
+        "Google": "google",
+        "OpenAI": "openai",
+        "Anthropic": "anthropic",
+        "Groq": "groq",
+        "Cerebras": "cerebras",
+        "Together AI": "together",
+        "OpenRouter": "openrouter",
+        "Nvidia": "nvidia",
+        "Mistral": "mistral",
+        "Cohere": "cohere",
+        "Ollama": "ollama",
+    }
+
     chain = [primary_model]
+    candidates = []
+
+    env_keys = get_environment_keys()
 
     try:
         providers = getattr(config, "providers", {})
-        for provider, models in providers.items():
-            if not isinstance(models, dict):
+        for provider_name, provider_models in providers.items():
+            if not isinstance(provider_models, dict):
                 continue
-            for model_id, info in models.items():
+
+            env_key_name = PROVIDER_MAP.get(provider_name)
+            if not env_key_name:
+                continue
+            if not env_keys.get(env_key_name):
+                continue
+
+            env_value = os.environ.get(env_key_name.upper())
+            if not is_valid_key(env_value):
+                continue
+
+            for model_id, info in provider_models.items():
                 if not isinstance(info, dict):
                     continue
                 if model_id == primary_model:
                     continue
                 cost = info.get("cost_in_1m", 999)
-                chain.append((model_id, cost))
+                candidates.append((model_id, cost))
 
-        # Sort by cost ascending (free/cheap first)
-        if len(chain) > 1:
-            chain[1:] = sorted(chain[1:], key=lambda x: x[1])
-            return [chain[0]] + [m[0] for m in chain[1:]]
+        candidates.sort(key=lambda x: x[1])
+        chain += [m[0] for m in candidates]
+        return chain
     except Exception:
         pass
 
-    # Fallback to hardcoded list if config parsing fails
-    return [primary_model, "groq/llama3-8b-8192", "openai/gpt-4o-mini"]
+    return [primary_model, "groq/llama-3.3-70b-versatile", "openai/gpt-4o-mini"]
 
 
 def get_all_available_models() -> dict:
@@ -390,34 +446,68 @@ class APIKeyModal(ModalScreen):
         height: auto;
         align: right middle;
         margin-top: 1;
-        gap: 1;
+    }
+    #key-dialog Button {
+        margin-left: 1;
     }
     """
 
     def compose(self):
+        import os
+        from axon.config.loader import load_config, reload_config
+
+        reload_config()
+        config = load_config()
+
+        KEY_MAP = {
+            "Google": "GOOGLE_API_KEY",
+            "OpenAI": "OPENAI_API_KEY",
+            "Anthropic": "ANTHROPIC_API_KEY",
+            "Groq": "GROQ_API_KEY",
+            "Nvidia": "NVIDIA_NIM_API_KEY",
+            "Together AI": "TOGETHER_API_KEY",
+            "Cerebras": "CEREBRAS_API_KEY",
+            "Mistral": "MISTRAL_API_KEY",
+            "DeepSeek": "DEEPSEEK_API_KEY",
+            "OpenRouter": "OPENROUTER_API_KEY",
+            "Perplexity": "PERPLEXITY_API_KEY",
+            "Cohere": "COHERE_API_KEY",
+            "xAI": "XAI_API_KEY",
+            "GitHub Copilot": "GITHUB_TOKEN",
+            "GitHub Models": "GITHUB_TOKEN",
+            "LMStudio": "OPENAI_API_KEY",
+        }
+
+        options = []
+        for provider_name in config.providers.keys():
+            env_key = KEY_MAP.get(provider_name)
+            if not env_key:
+                continue
+            has_key = bool(os.environ.get(env_key))
+            status = "✓" if has_key else "○"
+            options.append((f"{status} {provider_name}", env_key))
+
+        defaults = [
+            ("○ Google", "GOOGLE_API_KEY"),
+            ("○ OpenAI", "OPENAI_API_KEY"),
+            ("○ Anthropic", "ANTHROPIC_API_KEY"),
+            ("○ Groq", "GROQ_API_KEY"),
+        ]
+        seen_keys = {o[1] for o in options}
+        for label, key in defaults:
+            if key not in seen_keys:
+                options.append((label, key))
+
         with Vertical(id="key-dialog"):
             yield Label(
-                "[bold]Configure API Keys[/bold]\nSelect a provider and paste your new key.",
+                "[bold]Configure API Keys[/bold]\n"
+                "Select a provider and paste your key.",
                 classes="box",
             )
-
-            yield Select(
-                [
-                    ("Google Gemini", "GEMINI_API_KEY"),
-                    ("OpenAI", "OPENAI_API_KEY"),
-                    ("Anthropic", "ANTHROPIC_API_KEY"),
-                    ("Groq", "GROQ_API_KEY"),
-                    ("NVIDIA NIM", "NVIDIA_NIM_API_KEY"),
-                    ("Together AI", "TOGETHER_API_KEY"),
-                ],
-                prompt="Select Provider",
-                id="provider-select",
-            )
-
+            yield Select(options, prompt="Select Provider", id="provider-select")
             yield Input(
-                placeholder="Paste your sk-... key here", password=True, id="key-input"
+                placeholder="Paste your API key here", password=True, id="key-input"
             )
-
             with Horizontal():
                 yield Button("Cancel", variant="error", id="cancel-btn")
                 yield Button("Save Key", variant="success", id="save-btn")
@@ -440,73 +530,256 @@ class APIKeyModal(ModalScreen):
 
     def save_to_env(self, key_name: str, key_value: str) -> None:
         import os
+        from pathlib import Path
+
+        project_env = Path(os.getcwd()) / ".env"
+        home_env = Path.home() / ".axon" / ".env"
+
+        if project_env.exists():
+            env_path = project_env
+        else:
+            home_env.parent.mkdir(parents=True, exist_ok=True)
+            home_env.touch(exist_ok=True)
+            env_path = home_env
 
         try:
-            from dotenv import set_key
+            from dotenv import set_key, load_dotenv
 
-            env_path = os.path.join(os.getcwd(), ".env")
-            if not os.path.exists(env_path):
-                open(env_path, "a").close()
-            set_key(env_path, key_name, key_value)
-        except ImportError:
-            self.app.notify("Please run: pip install python-dotenv", severity="error")
+            set_key(str(env_path), key_name, key_value)
+            load_dotenv(str(env_path), override=True)
+            os.environ[key_name] = key_value
+            self.app.notify(
+                f"✓ {key_name} saved and loaded",
+                title="Key Saved",
+                severity="information",
+            )
+        except Exception as e:
+            self.app.notify(f"Error: {e}", severity="error")
+
+
+class ModelSwitcherModal(ModalScreen):
+    CSS = """
+    ModelSwitcherModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.8);
+    }
+    #model-dialog {
+        width: 70;
+        height: 35;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    #model-search {
+        margin-bottom: 1;
+        border: solid $primary;
+    }
+    #model-list {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    .provider-header {
+        color: $accent;
+        text-style: bold;
+        padding: 0 1;
+        margin-top: 1;
+    }
+    .model-item {
+        padding: 0 2;
+    }
+    .model-item:hover {
+        background: $boost;
+    }
+    .model-current {
+        color: $success;
+    }
+    .model-cost {
+        color: $text-muted;
+    }
+    #custom-model-input {
+        margin-top: 1;
+        border: solid $warning;
+    }
+    """
+
+    def __init__(self, current_model: str, config):
+        super().__init__()
+        self.current_model = current_model
+        self.config = config
+        self.all_models = self._build_model_list()
+
+    def _build_model_list(self) -> list:
+        models = []
+        providers = self.config.providers
+
+        if not isinstance(providers, dict):
+            return models
+
+        for provider_name, provider_models in providers.items():
+            if not isinstance(provider_models, dict):
+                continue
+
+            provider_list = []
+            for model_id, info in provider_models.items():
+                if not isinstance(info, dict):
+                    continue
+
+                cost_in = info.get("cost_in_1m", 0)
+                cost_out = info.get("cost_out_1m", 0)
+                max_ctx = info.get("max_context", 0)
+
+                if cost_in == 0:
+                    cost_str = "free"
+                else:
+                    cost_str = f"${cost_in:.3f}/1M"
+
+                ctx_str = ""
+                if max_ctx >= 1_000_000:
+                    ctx_str = f"{max_ctx // 1_000_000}M ctx"
+                elif max_ctx >= 1_000:
+                    ctx_str = f"{max_ctx // 1_000}k ctx"
+
+                provider_list.append(
+                    {
+                        "provider": provider_name,
+                        "model_id": model_id,
+                        "cost_str": cost_str,
+                        "ctx_str": ctx_str,
+                        "is_current": model_id == self.current_model,
+                    }
+                )
+
+            if provider_list:
+                models.append(
+                    {
+                        "type": "provider",
+                        "name": provider_name,
+                        "models": provider_list,
+                    }
+                )
+
+        return models
+
+    def compose(self):
+        with Vertical(id="model-dialog"):
+            yield Label("[bold]Switch Model[/bold]  [dim]esc to close[/dim]")
+            yield Input(placeholder="Search providers or models...", id="model-search")
+            with VerticalScroll(id="model-list"):
+                yield ListView(id="inner-list")
+            yield Input(
+                placeholder="+ Enter custom model string", id="custom-model-input"
+            )
+
+    def on_mount(self) -> None:
+        self._populate_list("")
+
+    def _populate_list(self, filter_str: str = "") -> None:
+        from textual.widgets import ListView, ListItem, Label
+
+        list_view = self.query_one("#inner-list", ListView)
+        list_view.clear()
+
+        for group in self.all_models:
+            provider_name = group["name"]
+            visible = [
+                m
+                for m in group["models"]
+                if not filter_str
+                or filter_str.lower() in m["model_id"].lower()
+                or filter_str.lower() in provider_name.lower()
+            ]
+            if not visible:
+                continue
+
+            list_view.append(ListItem(Label(f"▼ {provider_name}")))
+            for m in visible:
+                mark = " ✓" if m["is_current"] else ""
+                list_view.append(
+                    ListItem(
+                        Label(
+                            f"  {m['model_id']}  "
+                            f"[dim]{m['cost_str']}[/dim]"
+                            f"[green]{mark}[/green]"
+                        ),
+                        id=f"m-{m['model_id'].replace('/', '_').replace('.', '_')}",
+                    )
+                )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "model-search":
+            self._populate_list(event.value)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        item_id = getattr(event.item, "id", "") or ""
+        if item_id.startswith("m-"):
+            model_id = item_id[2:].replace("_", "/", 1)
+            self.dismiss(model_id)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "custom-model-input":
+            custom = event.value.strip()
+            if custom:
+                self.dismiss(custom)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
 
 
 class AxonApp(App):
     CSS = """
-    Screen { background: #0d0d0d; }
-    #main-layout { height: 100%; width: 100%; }
-    #left-column { width: 1fr; padding: 0 1; }
-    #chat-log { height: 1fr; }
-    
-    /* Header bar with session title and brain status */
-    #header-bar {
-        height: auto;
-        dock: top;
-        background: #1a1a1a;
-        border-bottom: solid #333333;
-        padding: 0 1;
-    }
-    #header-title {
-        color: #3b82f6;
-    }
-    #header-brain {
-        color: #888888;
-    }
-    
-    /* The blue-bordered input block */
-    #input-box {
-        height: auto;
-        border-left: outer #3b82f6;
-        padding-left: 1;
-        margin-bottom: 1;
-    }
-    #chat-input { border: none; width: 100%; background: transparent; padding: 0; }
-    #status-line { color: #888888; margin-top: 1; }
-    
-    /* The Sidebar */
-    #sidebar { width: 35; border-left: none; padding: 1 2; background: #111111; }
-    #sidebar-modified { height: 2fr; overflow-y: auto; }
-    #sidebar-workspace { height: auto; dock: bottom; border-top: solid #333333; padding: 0 1; }
-    
-    /* Thinking display */
-    #thinking-display {
-        color: #555555;
-        text-style: italic;
-        margin-bottom: 1;
-    }
-    
-    /* Session List Overlay */
-    #session-overlay {
-        width: 60%;
-        height: 60%;
-        background: #1a1a1a;
-        border: solid #3b82f6;
-        padding: 1;
-    }
-    #session-list { height: 1fr; }
-    #session-search { margin-bottom: 1; }
-    """
+Screen {
+    background: #0d0d0d;
+}
+#header-bar {
+    height: 1;
+    background: #111111;
+    color: #ffffff;
+    padding: 0 1;
+}
+#main-layout {
+    height: 1fr;
+}
+#chat-area {
+    width: 1fr;
+    height: 1fr;
+}
+#chat-log {
+    height: 1fr;
+    padding: 0 1;
+}
+#live-stream {
+    height: auto;
+    min-height: 1;
+    padding: 0 1;
+    color: #00ff88;
+}
+#sidebar {
+    width: 30;
+    background: #0a0a0a;
+    border-left: solid #1a1a1a;
+    padding: 1;
+}
+#input-bar {
+    height: 3;
+    margin: 0 1 1 1;
+    border: solid #333333;
+    background: #111111;
+}
+#input-bar:focus-within {
+    border: solid #0066ff;
+}
+#status-line {
+    height: 1;
+    background: #111111;
+    padding: 0 1;
+    color: #666666;
+}
+Footer {
+    height: 1;
+    background: #0a0a0a;
+}
+"""
 
     COMMANDS = App.COMMANDS | {ModelCommandProvider}
 
@@ -514,6 +787,7 @@ class AxonApp(App):
         Binding("tab", "cycle_mode", "Switch Mode", priority=True),
         Binding("ctrl+t", "cycle_variant", "Variants", priority=True),
         Binding("ctrl+p", "command_palette", "Commands", priority=True),
+        Binding("ctrl+m", "switch_model_dialog", "Models", priority=True),
         Binding("ctrl+k", "open_keys", "API Keys", priority=True),
         Binding("ctrl+x l", "show_session_list", "Sessions", priority=True),
         Binding("ctrl+x n", "new_session", "New Session", priority=True),
@@ -536,46 +810,31 @@ class AxonApp(App):
         self._awaiting_rename = False
 
     def compose(self) -> ComposeResult:
+        yield Static(
+            f"Axon  {self.session_title}  {getattr(self, 'model', 'gemini/gemini-2.5-flash').split('/')[-1]}  🧠 Observing",
+            id="header-bar",
+        )
         with Horizontal(id="main-layout"):
-            with Vertical(id="left-column"):
-                yield Static(
-                    "[bold]Axon[/bold] [cyan]│[/cyan] [session_title] [dim]│[/dim] [model] [dim]│[/dim] [brain_status]",
-                    markup=True,
-                    id="header-bar",
-                )
+            with Vertical(id="chat-area"):
                 yield RichLog(id="chat-log", markup=True, wrap=True)
                 yield Static("", id="live-stream", markup=True)
-                yield Static("", id="thinking-display", markup=True)
-                with Vertical(id="input-box"):
-                    yield Input(id="chat-input", placeholder="Ask anything...")
-                    yield Static("", id="status-line", markup=True)
-
             with Vertical(id="sidebar"):
                 yield Static(
-                    "[bold]Context[/bold]\n0 tokens\nInitializing...\n",
-                    markup=True,
-                    id="sidebar-context",
+                    "Context\n0 tokens\n0.0% used\n$0.0000 spent", id="context-info"
                 )
-                yield Static(
-                    "[bold]Modified Files[/bold]\nLoading...\n",
-                    markup=True,
-                    id="sidebar-modified",
-                )
-                yield Static(
-                    "[bold]Workspace[/bold]\nLoading...\n",
-                    markup=True,
-                    id="sidebar-workspace",
-                )
+                yield Static("Modified Files", id="modified-files")
+                yield Static(f"Workspace\n{os.getcwd()}", id="workspace")
+        yield Input(placeholder="Ask anything...", id="chat-input")
+        yield Static("", id="status-line")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#chat-input").focus()
         self.update_status_line()
+        self.update_header()
 
-        # Start the real-time polling loop (runs every 2 seconds)
         self.set_interval(2.0, self.fetch_sidebar_data)
 
-        # Do an immediate initial fetch
         self.run_worker(self.fetch_sidebar_data())
 
     async def fetch_sidebar_data(self) -> None:
@@ -584,15 +843,13 @@ class AxonApp(App):
 
         cwd = os.getcwd()
 
-        # 1. DYNAMIC WORKSPACE
         try:
-            self.query_one("#sidebar-workspace", Static).update(
+            self.query_one("#workspace", Static).update(
                 f"[bold]Workspace[/bold]\n[dim]{cwd}[/dim]"
             )
         except Exception:
             pass
 
-        # 2. DYNAMIC MODIFIED FILES (Git or File Watcher)
         try:
             if is_git_repo(cwd):
                 stats = get_file_stats(cwd)
@@ -607,7 +864,6 @@ class AxonApp(App):
                 else:
                     mod_text = "[dim]Working tree clean[/dim]"
             else:
-                # Non-git repo: scan for changed files via line diff
                 import glob
 
                 py_files = glob.glob("**/*.py", recursive=True)[:5]
@@ -624,18 +880,17 @@ class AxonApp(App):
                 else:
                     mod_text = "[dim]No Python files[/dim]"
 
-            self.query_one("#sidebar-modified", Static).update(
+            self.query_one("#modified-files", Static).update(
                 f"[bold]Modified Files[/bold]\n{mod_text}"
             )
         except Exception:
             try:
-                self.query_one("#sidebar-modified", Static).update(
+                self.query_one("#modified-files", Static).update(
                     "[bold]Modified Files[/bold]\n[dim]Unavailable[/dim]"
                 )
             except Exception:
                 pass
 
-        # 3. SQLITE MEMORY (Tokens & Sessions & Agent)
         db_path = os.path.expanduser("~/.axon/memory.sqlite")
         if not os.path.exists(db_path):
             return
@@ -644,7 +899,6 @@ class AxonApp(App):
             async with aiosqlite.connect(db_path) as db:
                 db.row_factory = aiosqlite.Row
 
-                # Ensure tables exist
                 await db.execute("""
                     CREATE TABLE IF NOT EXISTS action_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -680,7 +934,6 @@ class AxonApp(App):
                         row = await cursor.fetchone()
                         tokens = (row["total"] // 4) if row else 0
 
-                # Get context window dynamically
                 context_window = get_context_window(
                     getattr(self, "model", "gemini/gemini-2.5-flash")
                 )
@@ -689,20 +942,14 @@ class AxonApp(App):
                 pct = (total_tokens / context_window * 100) if context_window > 0 else 0
 
                 try:
-                    self.query_one("#sidebar-context", Static).update(
+                    self.query_one("#context-info", Static).update(
                         f"[bold]Context[/bold]\n{total_tokens:,} tokens\n{pct:.1f}% used\n${self.total_cost:.4f} spent\n{session_count} sessions\n"
                     )
                 except Exception:
                     pass
 
-                # Idle Agent - use brain status
                 brain_status = get_brain_status()
-                try:
-                    self.query_one("#sidebar-agent", Static).update(
-                        f"[bold]Idle Agent[/bold]\n{brain_status}\n"
-                    )
-                except Exception:
-                    pass
+                self.brain_status = brain_status
         except Exception:
             pass
 
@@ -984,9 +1231,24 @@ Model: {model_name}
 
     def watch_current_mode(self, old: str, new: str) -> None:
         self.update_status_line()
+        try:
+            input_bar = self.query_one("#chat-input", Input)
+            placeholders = {
+                "chat": "Ask anything...",
+                "plan": "Describe what to plan...",
+                "build": "Describe what to build...",
+            }
+            input_bar.placeholder = placeholders.get(new, "Ask anything...")
+        except Exception:
+            pass
+        self.notify(f"Switched to {new.capitalize()} mode", title="Mode", timeout=1)
 
     def watch_token_variant(self, old: str, new: str) -> None:
         self.update_status_line()
+        caps = {"normal": "300 tokens", "high": "1,500 tokens", "max": "6,000 tokens"}
+        self.notify(
+            f"{new.capitalize()} — {caps.get(new, '')}", title="Variant", timeout=1
+        )
 
     def watch_session_title(self, old: str, new: str) -> None:
         self.update_header()
@@ -1021,7 +1283,7 @@ Model: {model_name}
         status_text = f"[bold {m_color}]{self.current_mode.capitalize()}[/]  {ui_model_name} [dim]via {provider_name}[/dim] · [bold {v_color}]{self.token_variant}[/]"
 
         try:
-            self.query_one("#status-line", Static).update(status_text)
+            self.query_one("#status-bar", Static).update(status_text)
         except Exception:
             pass
 
@@ -1035,6 +1297,22 @@ Model: {model_name}
     def action_open_keys(self) -> None:
         """Opens the API Key configuration modal."""
         self.push_screen(APIKeyModal())
+
+    def action_switch_model_dialog(self) -> None:
+        """Opens the Model Switcher modal."""
+        from axon.config.loader import get_config
+
+        config = get_config()
+        current = getattr(self, "model", config.default_model)
+
+        def handle_result(new_model: str | None) -> None:
+            if new_model:
+                self.model = new_model
+                self.update_status_line()
+                self.run_worker(self.fetch_sidebar_data())
+                self.notify(f"Switched to {new_model}", title="✓ Model Changed")
+
+        self.push_screen(ModelSwitcherModal(current, config), handle_result)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_text = event.value.strip()
@@ -1421,9 +1699,12 @@ Model: {model_name}
                 )
 
                 full_response = ""
+                last_chunk = None
+
                 async for chunk in response:
                     content = chunk.choices[0].delta.content or ""
                     full_response += content
+                    last_chunk = chunk
                     self.call_from_thread(
                         live_stream.update,
                         f"[bold green]Axon ({self.token_variant}):[/bold green]\n{full_response}",
@@ -1442,11 +1723,15 @@ Model: {model_name}
                 )
 
                 # Handle build mode - write code to file
-                if self.current_mode == "build" and full_response:
+                if (
+                    self.current_mode == "build"
+                    and full_response
+                    and "```" in full_response
+                ):
                     import re
 
                     code_blocks = re.findall(
-                        r"```.*?\n(.*?)```", full_response, re.DOTALL
+                        r"```(?:\w+)?\n(.*?)```", full_response, re.DOTALL
                     )
                     if code_blocks:
                         filename = "axon_build_output.py"
@@ -1465,26 +1750,38 @@ Model: {model_name}
                             f"[bold blue]System: File successfully written to {filepath}[/bold blue]",
                         )
 
-                # Extract token usage and update totals
-                if hasattr(response, "usage") and response.usage:
-                    prompt_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
-                    completion_tokens = (
-                        getattr(response.usage, "completion_tokens", 0) or 0
-                    )
-                    self.total_prompt_tokens += prompt_tokens
-                    self.total_completion_tokens += completion_tokens
-                    cost = get_cost(current_model, prompt_tokens, completion_tokens)
+                # Extract token usage from LAST CHUNK
+                if last_chunk:
+                    usage = getattr(last_chunk, "usage", None)
+                    if usage:
+                        pt = getattr(usage, "prompt_tokens", 0) or 0
+                        ct = getattr(usage, "completion_tokens", 0) or 0
+                    else:
+                        pt = len(full_response.split()) * 2
+                        ct = len(full_response.split())
+
+                    self.total_prompt_tokens += pt
+                    self.total_completion_tokens += ct
+                    cost = get_cost(current_model, pt, ct)
                     self.total_cost += cost
+
+                    self.call_from_thread(self.run_worker, self.fetch_sidebar_data())
 
                 # Save to SQLite
                 session_id = getattr(self, "current_session_id", None)
                 if session_id:
+                    import os
                     import aiosqlite
                     from datetime import datetime
 
                     db_path = os.path.expanduser("~/.axon/memory.sqlite")
 
                     async def save_logs():
+                        import os
+                        import aiosqlite
+                        from datetime import datetime
+
+                        db_path = os.path.expanduser("~/.axon/memory.sqlite")
                         async with aiosqlite.connect(db_path) as db:
                             now = datetime.now().isoformat()
                             await db.execute(
