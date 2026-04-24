@@ -128,6 +128,101 @@ FETCH_URL_TOOL = {
     },
 }
 
+BROWSE_URL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browse_url",
+        "description": (
+            "Browse a URL using a real Chrome browser. "
+            "Token-efficient: text mode uses ~800 tokens "
+            "vs 10,000 for raw HTML. Use this for most "
+            "web browsing. Supports reading, clicking, "
+            "and filling forms on real websites."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to navigate to"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "snapshot", "screenshot"],
+                    "default": "text",
+                    "description": (
+                        "text: extract page text (~800 tokens), "
+                        "snapshot: get clickable elements, "
+                        "screenshot: take screenshot"
+                    ),
+                },
+                "click_ref": {
+                    "type": "string",
+                    "description": "Element ref to click (e.g. e5)",
+                },
+                "fill_ref": {"type": "string", "description": "Element ref to fill"},
+                "fill_value": {
+                    "type": "string",
+                    "description": "Value to type into element",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+
+async def handle_browse_url(
+    url: str, action: str = "text", ref: str = None, value: str = None
+) -> str:
+    import httpx
+
+    PINCHTAB_BASE = "http://localhost:9867"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            health = await client.get(f"{PINCHTAB_BASE}/health", timeout=2)
+            if health.status_code != 200:
+                raise Exception("not running")
+    except Exception:
+        return (
+            "PinchTab is not running. Start it with: pinchtab daemon start\nThen retry."
+        )
+
+    async with httpx.AsyncClient() as client:
+        if action == "text":
+            await client.post(
+                f"{PINCHTAB_BASE}/navigate", json={"url": url}, timeout=30
+            )
+            response = await client.get(f"{PINCHTAB_BASE}/text", timeout=30)
+            return response.text[:8000]
+
+        elif action == "snapshot":
+            await client.post(
+                f"{PINCHTAB_BASE}/navigate", json={"url": url}, timeout=30
+            )
+            response = await client.get(
+                f"{PINCHTAB_BASE}/snapshot?filter=interactive&format=compact",
+                timeout=30,
+            )
+            return response.text
+
+        elif action == "click" and ref:
+            response = await client.post(
+                f"{PINCHTAB_BASE}/action",
+                json={"kind": "click", "ref": ref},
+                timeout=15,
+            )
+            return f"Clicked {ref}"
+
+        elif action == "fill" and ref and value:
+            response = await client.post(
+                f"{PINCHTAB_BASE}/action",
+                json={"kind": "fill", "ref": ref, "value": value},
+                timeout=15,
+            )
+            return f"Filled {ref} with value"
+
+        return "Unknown action"
+
+
 BUILDER_SYSTEM_PROMPT = """You are a Senior Software Developer building production-ready code. Your task is to implement software based on user requests.
 
 When given a task, you MUST use the write_file tool to create or modify files. Do NOT output raw code directly.
@@ -193,6 +288,7 @@ Only report back to the user once the command runs successfully, or if you have 
         LIST_DIRECTORY_TOOL,
         PATCH_FILE_TOOL,
         FETCH_URL_TOOL,
+        BROWSE_URL_TOOL,
     ]
     written_files: list[str] = []
     iteration_count = 0
@@ -310,6 +406,49 @@ Only report back to the user once the command runs successfully, or if you have 
                             tool_result = f"Error fetching URL: {e}"
                         except Exception as e:
                             tool_result = f"Error fetching URL: {e}"
+
+                    messages.append(
+                        ChatMessage(
+                            role=MessageRole.TOOL,
+                            content=tool_result,
+                            tool_call_id=tc_id,
+                            name=tc_name,
+                        )
+                    )
+
+                elif tc_name == "browse_url":
+                    from axon.tools.browser import (
+                        check_pinchtab,
+                        browse_text,
+                        browse_snapshot,
+                        browse_screenshot,
+                        browse_click,
+                        browse_fill,
+                    )
+
+                    url = args.get("url")
+                    mode = args.get("mode", "text")
+                    click_ref = args.get("click_ref")
+                    fill_ref = args.get("fill_ref")
+                    fill_value = args.get("fill_value")
+
+                    if not url:
+                        tool_result = "Error: url parameter is required"
+                    elif not await check_pinchtab():
+                        tool_result = (
+                            "PinchTab browser is offline. "
+                            "Start with: pinchtab daemon start"
+                        )
+                    elif click_ref:
+                        tool_result = await browse_click(click_ref)
+                    elif fill_ref and fill_value:
+                        tool_result = await browse_fill(fill_ref, fill_value)
+                    elif mode == "snapshot":
+                        tool_result = await browse_snapshot(url)
+                    elif mode == "screenshot":
+                        tool_result = await browse_screenshot()
+                    else:
+                        tool_result = await browse_text(url)
 
                     messages.append(
                         ChatMessage(

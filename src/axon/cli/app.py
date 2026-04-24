@@ -79,6 +79,10 @@ def models() -> None:
 
 @app.command()
 def chat(
+    prompt: Optional[str] = typer.Argument(
+        None,
+        help="Optional initial prompt to send",
+    ),
     model: Optional[str] = typer.Option(
         None,
         "--model",
@@ -97,14 +101,13 @@ def chat(
 
     from axon.memory.store import init_db
     from axon.cli.commands.chat import run_chat_loop
-    from axon.config.loader import get_config, get_environment_keys
-    from axon.utils.console import console
 
     asyncio.run(init_db())
-
-    config = get_config()
-    final_model = config.merge_cli(model=model)
-    asyncio.run(run_chat_loop(model=final_model, session_id=session))
+    asyncio.run(
+        run_chat_loop(
+            model=model, session_id=session, initial_prompt=prompt, initial_mode="chat"
+        )
+    )
 
 
 @app.command()
@@ -160,13 +163,10 @@ def build(
     import asyncio
 
     from axon.memory.store import init_db
-    from axon.cli.commands.build import run_build
-    from axon.config.loader import get_config
+    from axon.cli.commands.chat import run_chat_loop
 
     asyncio.run(init_db())
-    config = get_config()
-    final_model = config.merge_cli(model=model)
-    asyncio.run(run_build(task, model=final_model))
+    asyncio.run(run_chat_loop(model=model, initial_prompt=task, initial_mode="build"))
 
 
 @app.command()
@@ -189,13 +189,14 @@ def plan(
     import asyncio
 
     from axon.memory.store import init_db
-    from axon.cli.commands.plan import stream_plan
-    from axon.config.loader import get_config
+    from axon.cli.commands.chat import run_chat_loop
 
     asyncio.run(init_db())
-    config = get_config()
-    final_model = config.merge_cli(model=model)
-    asyncio.run(stream_plan(task, model=final_model, execute=execute))
+    asyncio.run(
+        run_chat_loop(
+            model=model, initial_prompt=task, initial_mode="plan", auto_execute=execute
+        )
+    )
 
 
 def main() -> None:

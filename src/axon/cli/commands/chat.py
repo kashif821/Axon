@@ -1,6 +1,4 @@
 from __future__ import annotations
-import os
-
 import asyncio
 import os
 from dotenv import load_dotenv
@@ -245,6 +243,16 @@ def get_brain_status() -> str:
     if changes:
         return f"🧠 Changes detected ({len(changes)} files)"
     return "🧠 Observing"
+
+
+async def check_pinchtab() -> str:
+    try:
+        from axon.tools.browser import check_pinchtab as check
+
+        result = await check()
+        return "🌐 Browser: ready" if result else "🌐 Browser: offline"
+    except Exception:
+        return "🌐 Browser: offline"
 
 
 def get_context_window(model: str) -> int:
@@ -800,6 +808,10 @@ Footer {
     brain_status = reactive("🧠 Observing")
     current_session_id = None
 
+    initial_mode: str = "chat"
+    initial_prompt: str | None = None
+    auto_execute: bool = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.model = "gemini/gemini-2.5-flash"
@@ -808,6 +820,7 @@ Footer {
         self.total_completion_tokens = 0
         self.total_cost = 0.0
         self._awaiting_rename = False
+        self._initial_submitted = False
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -837,15 +850,32 @@ Footer {
 
         self.run_worker(self.fetch_sidebar_data())
 
+        if self.initial_mode:
+            self.current_mode = self.initial_mode
+
+        if self.initial_prompt and not self._initial_submitted:
+            self._initial_submitted = True
+            self.set_timer(0.8, self._submit_initial_prompt)
+
+    def _submit_initial_prompt(self) -> None:
+        if self.initial_prompt:
+            prompt = self.initial_prompt
+            self.initial_prompt = None
+            chat_log = self.query_one("#chat-log", RichLog)
+            chat_log.write(f"\n[bold cyan]Initial task:[/bold cyan] {prompt}")
+            self.stream_llm_response(prompt)
+
     async def fetch_sidebar_data(self) -> None:
         """Polls SQLite and the local filesystem to update the sidebar dynamically."""
         import os, subprocess, aiosqlite
 
         cwd = os.getcwd()
 
+        pinchtab_status = await check_pinchtab()
+
         try:
             self.query_one("#workspace", Static).update(
-                f"[bold]Workspace[/bold]\n[dim]{cwd}[/dim]"
+                f"[bold]Workspace[/bold]\n[dim]{cwd}[/dim]\n\n{pinchtab_status}"
             )
         except Exception:
             pass
@@ -1023,10 +1053,42 @@ Footer {
             )
             chat_log = self.query_one("#chat-log", RichLog)
             chat_log.write(
-                f"\n[bold cyan]Sessions:[/bold cyan]\n{session_text}\n[dim]Type session number to load, or /delete to remove[/dim]"
+                f"\n[bold cyan]Sessions:[/bold cyan]\n{session_text}\n[dim]Type number to load, /delete <number> to remove[/dim]"
             )
 
         self.run_worker(show_overlay())
+
+    async def _get_sessions_list(self) -> list:
+        import aiosqlite
+        import os
+
+        db_path = os.path.expanduser("~/.axon/memory.sqlite")
+        if not os.path.exists(db_path):
+            return []
+
+        async with aiosqlite.connect(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, title, created_at FROM sessions ORDER BY created_at DESC"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                sessions = []
+                for r in rows:
+                    async with db.execute(
+                        "SELECT COUNT(*) as cnt FROM action_logs WHERE session_id = ?",
+                        (r["id"],),
+                    ) as cnt_cursor:
+                        cnt_row = await cnt_cursor.fetchone()
+                        msg_count = cnt_row["cnt"] if cnt_row else 0
+                    sessions.append(
+                        {
+                            "id": r["id"],
+                            "title": r["title"],
+                            "created_at": r["created_at"],
+                            "msg_count": msg_count,
+                        }
+                    )
+                return sessions
 
     def action_new_session(self) -> None:
         """Create a new session."""
@@ -1210,13 +1272,12 @@ Model: {model_name}
 
         self.model = new_model_id
 
-        # Update the status line immediately!
         try:
             self.update_status_line()
+            self.update_header()
         except Exception:
             pass
 
-        # Force a sidebar fetch so the context math updates for the new model
         self.run_worker(self.fetch_sidebar_data())
         self.notify(f"Brain shifted to {new_model_id}", title="Model Switched")
 
@@ -1348,6 +1409,8 @@ Model: {model_name}
                 await self.handle_brain_status(chat_log)
             elif cmd == "/files":
                 await self.handle_list_files(chat_log)
+            elif cmd == "/browse":
+                await self.handle_browse(args, chat_log)
             else:
                 chat_log.write(
                     f"[red]Unknown command: {cmd}. Type /help for available commands[/red]"
@@ -1400,42 +1463,53 @@ Model: {model_name}
                 chat_log.write("[yellow]Usage: /load <number>[/yellow]")
             return
 
-        if user_text.lower() == "/delete":
-            if not self.current_session_id:
-                chat_log.write("[yellow]No active session to delete[/yellow]")
-                return
-            import aiosqlite, os
+        if user_text.lower().startswith("/delete"):
+            parts = user_text.split()
+            target_id = None
 
-            db_path = os.path.expanduser("~/.axon/memory.sqlite")
-            try:
+            if len(parts) > 1:
+                try:
+                    idx = int(parts[1]) - 1
+                    sessions_list = await self._get_sessions_list()
+                    if 0 <= idx < len(sessions_list):
+                        target_id = sessions_list[idx]["id"]
+                except (ValueError, IndexError):
+                    chat_log.write("[yellow]Invalid session number[/yellow]")
+                    return
+            else:
+                target_id = self.current_session_id
+                if not target_id:
+                    chat_log.write("[yellow]No active session to delete[/yellow]")
+                    return
+
+            async def do_delete():
+                import aiosqlite
+                import os
+
+                db_path = os.path.expanduser("~/.axon/memory.sqlite")
                 async with aiosqlite.connect(db_path) as db:
-                    db.row_factory = aiosqlite.Row
-                    # Ensure action_logs table exists
-                    await db.execute("""
-                        CREATE TABLE IF NOT EXISTS action_logs (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            session_id TEXT,
-                            role TEXT,
-                            content TEXT,
-                            timestamp TEXT
-                        )
-                    """)
                     await db.execute(
                         "DELETE FROM action_logs WHERE session_id = ?",
-                        (self.current_session_id,),
+                        (target_id,),
                     )
-                    await db.execute(
-                        "DELETE FROM sessions WHERE id = ?", (self.current_session_id,)
-                    )
+                    await db.execute("DELETE FROM sessions WHERE id = ?", (target_id,))
                     await db.commit()
-                self.current_session_id = None
-                self.total_prompt_tokens = 0
-                self.total_completion_tokens = 0
-                self.total_cost = 0.0
-                chat_log.write("[bold red]Session deleted.[/bold red]")
-            except Exception as e:
-                chat_log.write(f"[red]Delete failed: {e}[/red]")
-            return
+
+                if target_id == self.current_session_id:
+                    self.current_session_id = None
+                    self.total_prompt_tokens = 0
+                    self.total_completion_tokens = 0
+                    self.total_cost = 0.0
+                    self.call_from_thread(
+                        chat_log.write, "[bold red]Current session deleted.[/bold red]"
+                    )
+                else:
+                    self.call_from_thread(
+                        chat_log.write, "[bold red]Session deleted.[/bold red]"
+                    )
+                self.notify("Session deleted", title="Deleted")
+
+            self.run_worker(do_delete())
 
         # Handle custom model input (after prompting with action_prompt_custom_model)
         if hasattr(self, "_awaiting_custom_model") and self._awaiting_custom_model:
@@ -1632,6 +1706,24 @@ Model: {model_name}
         else:
             chat_log.write("[dim]🧠 Observing workspace...[/dim]")
 
+    async def handle_browse(self, url: str, chat_log: RichLog) -> None:
+        """Handle /browse command."""
+        if not url.strip():
+            chat_log.write("[yellow]Usage: /browse <url>[/yellow]")
+            return
+
+        from axon.tools.browser import check_pinchtab, browse_text
+
+        if not await check_pinchtab():
+            chat_log.write(
+                "[red]PinchTab browser is offline. Start with: pinchtab daemon start[/red]"
+            )
+            return
+
+        chat_log.write(f"[cyan]Browsing {url}...[/cyan]")
+        result = await browse_text(url.strip())
+        chat_log.write(f"[bold cyan]Results:[/bold cyan]\n{result[:3000]}")
+
     async def handle_list_files(self, chat_log: RichLog) -> None:
         """Handle /files command."""
         changes = get_recent_file_changes()
@@ -1664,7 +1756,9 @@ Model: {model_name}
 
         config = get_config()
         primary_model = getattr(self, "model", config.default_model)
-        models_to_try = build_fallback_chain(primary_model, config)
+        from axon.llm.registry import build_fallback_chain
+
+        models_to_try = build_fallback_chain(primary_model, config.providers)
 
         # Get system prompt based on mode
         if self.current_mode == "build":
@@ -1691,11 +1785,16 @@ Model: {model_name}
                 variant_caps = {"normal": 300, "high": 1500, "max": 6000}
                 token_cap = variant_caps.get(self.token_variant, 300)
 
+                from axon.llm.registry import get_litellm_kwargs
+
+                litellm_kwargs = get_litellm_kwargs(current_model)
+
                 response = await litellm.acompletion(
                     model=current_model,
                     messages=messages,
                     stream=True,
                     max_tokens=token_cap,
+                    **litellm_kwargs,
                 )
 
                 full_response = ""
@@ -1830,7 +1929,13 @@ Model: {model_name}
         )
 
 
-async def run_chat_loop(model: str | None = None, session_id: str | None = None):
+async def run_chat_loop(
+    model: str | None = None,
+    session_id: str | None = None,
+    initial_prompt: str | None = None,
+    initial_mode: str = "chat",
+    auto_execute: bool = False,
+) -> None:
     app = AxonApp()
     if model:
         app.model = model
@@ -1839,4 +1944,7 @@ async def run_chat_loop(model: str | None = None, session_id: str | None = None)
 
         app.model = get_config().default_model
     app.current_session_id = session_id
+    app.initial_mode = initial_mode
+    app.initial_prompt = initial_prompt
+    app.auto_execute = auto_execute
     await app.run_async()

@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     nvidia_api_key: str | None = None
 
+    # PinchTab Browser
+    pinchtab_url: str = "http://localhost:9867"
+    pinchtab_token: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )

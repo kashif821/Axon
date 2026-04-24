@@ -142,3 +142,14 @@ providers:
   GitHub Models: {}
   GitLab Duo: {}
   Azure: {}
+
+provider_configs:
+  nvidia_nim:
+    api_base: https://integrate.api.nvidia.com/v1
+    env_key: NVIDIA_NIM_API_KEY
+  ollama:
+    api_base: http://localhost:11434
+    env_key: ""
+  openrouter:
+    api_base: https://openrouter.ai/api/v1
+    env_key: OPENROUTER_API_KEY
